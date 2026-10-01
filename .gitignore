@@ -5,3 +5,6 @@ node_modules/
 dist/
 .next/
 *.log
+
+# Day-one latency experiment: kept locally as evidence for decision #60, not part of the deliverable.
+spike/
