@@ -21,6 +21,19 @@ export const ERROR_FALLBACK_UNLOGGED =
  */
 export const CALL_END_MARKER = "Goodbye for now.";
 
+/**
+ * Recovery, not surrender. When a reply cannot be spoken or the caller could not be understood, the
+ * agent repeats the question it already asked rather than reaching for a specialist: on a phone line
+ * a mishearing is ordinary, and handing the caller off for it wastes their time and ours. A human is
+ * offered only after RECOVERY_LIMIT consecutive failures.
+ */
+export const RECOVERY_LIMIT = 3;
+
+export function rephraseLine(lastQuestion: string | null): string {
+  const opener = "Sorry, I didn't quite catch that.";
+  return lastQuestion ? `${opener} ${lastQuestion}` : `${opener} Could you say that again?`;
+}
+
 /** Code-owned lines for turns the model is never asked to handle. */
 export const DIDNT_CATCH = "Sorry, I didn't catch that. Could you say that again?";
 export const STILL_DIDNT_CATCH =
@@ -169,7 +182,10 @@ const STARTS_CONDITIONAL = /^\s*(if|when|whether|should|unless|in case)\b/i;
 // Completed actions only. Offering to act ("I can log a request for a specialist to follow up")
 // is not a claim, so the past forms are matched and the bare verbs are not.
 const RECORD_CLAIM =
-  /\b(logged|escalated|reference number|case number)\b|\b(created|raised|opened)\s+(a|an|your|the)\s+(ticket|case|request|escalation)\b|\brepresentative will follow up\b/;
+  // "reference number" and "case number" are deliberately absent: asking the caller for theirs is
+  // the most important question in the whole flow, and it tripped on every real call. An invented
+  // reference carries digits, which the grounding rule already blocks.
+  /\b(logged|escalated)\b|\b(created|raised|opened)\s+(a|an|your|the)\s+(ticket|case|request|escalation)\b|\brepresentative will follow up\b/;
 
 /** Commitments that are never allowed, whatever records exist. */
 const COMMITMENTS: RegExp[] = [

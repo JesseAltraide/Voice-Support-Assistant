@@ -272,3 +272,16 @@ describe("normalisation: tricks that hide text from the checks", () => {
     expect(blocked("Your acc​ount is restricted.")).toBe(true);
   });
 });
+
+describe("asking the caller for a reference is not a claim (regression from a real call)", () => {
+  it.each([
+    "Do you have a transaction reference for that incoming payment, like a reference number or transaction ID?",
+    "Could you give me the reference number from your dashboard?",
+    "What is the case number you were given?",
+  ])("allows %s", (reply) => expect(allowed(reply)).toBe(true));
+
+  it("still blocks the agent inventing a reference, because the digits are not grounded", () => {
+    expect(blocked("Your reference number is 48213.")).toBe(true);
+    expect(blocked("I've logged this, your case number is 9987.")).toBe(true);
+  });
+});

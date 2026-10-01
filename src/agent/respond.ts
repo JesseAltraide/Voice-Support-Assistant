@@ -4,7 +4,7 @@ import { getDb } from "../shared/db.js";
 import { config } from "./config.js";
 import { extractFacts } from "./facts.js";
 import {
-  checkReply, DIDNT_CATCH, ERROR_FALLBACK, ERROR_FALLBACK_UNLOGGED, ESCALATED_FALLBACK, NO_PROGRESS_CLOSE,
+  checkReply, DIDNT_CATCH, RECOVERY_LIMIT, rephraseLine, ERROR_FALLBACK, ERROR_FALLBACK_UNLOGGED, ESCALATED_FALLBACK, NO_PROGRESS_CLOSE,
   OFF_TOPIC_LINE, SAFE_FALLBACK, STATE_YOUR_PROBLEM, STILL_DIDNT_CATCH, TOOLS_DOWN_FALLBACK,
 } from "./guard.js";
 import { classifyInput, isRepeatQuestion } from "./caller-input.js";
@@ -135,6 +135,15 @@ function fallbackFor(escalationCreated: boolean): string {
 /** A turn where real support work happened, so the call has gone somewhere. */
 const SUBSTANTIVE = new Set(["answer_directly", "decline", "escalate", "clarify"]);
 
+const countWhile = <T>(items: T[], ok: (item: T) => boolean): number => {
+  let n = 0;
+  for (const item of items) {
+    if (!ok(item)) break;
+    n += 1;
+  }
+  return n;
+};
+
 const countTrailing = (types: string[], match: string): number => {
   let n = 0;
   for (const t of types) {
@@ -212,15 +221,20 @@ async function runTurn(p: TurnRequest): Promise<TurnResult> {
   // Judged before the model runs: noise costs nothing to answer, and a caller who never gets to a
   // question should not keep a metered call open.
   // Repeat detection compares only against turns the caller actually heard an answer to.
-  const [recentTypes, priorForRepeat] = await Promise.all([store.recentAnswerTypes(id, 20), store.answeredCallerTexts(id)]);
+  const [recentTypes, priorForRepeat, recent] = await Promise.all([
+    store.recentAnswerTypes(id, 20), store.answeredCallerTexts(id), store.recentTurns(id, RECOVERY_LIMIT),
+  ]);
+  // A run of turns the caller could not use: a mishearing, or a reply the guard had to replace.
+  const failedRecoveries = countWhile(recent, (t) => t.guardTripped || t.answerType === "unintelligible");
+  const lastQuestion = recent.find((t) => t.assistant?.includes("?"))?.assistant ?? null;
   const input = classifyInput(p.text);
   if (input.kind !== "ok") {
-    const streak = countTrailing(recentTypes, "unintelligible") + 1;
+    const streak = failedRecoveries + 1;
     return codeOwnedTurn(id, p.text, {
-      reply: streak >= 2 ? STILL_DIDNT_CATCH : DIDNT_CATCH,
+      reply: streak >= RECOVERY_LIMIT ? STILL_DIDNT_CATCH : rephraseLine(lastQuestion),
       answerType: "unintelligible",
       note: `caller input was ${input.kind}; consecutive ${streak}`,
-      countsUnresolved: streak >= 2,
+      countsUnresolved: streak >= RECOVERY_LIMIT,
       started,
     });
   }
@@ -319,8 +333,10 @@ async function runTurn(p: TurnRequest): Promise<TurnResult> {
   }
   if (!guard.ok) {
     // An escalation logged earlier in the call counts too, so the caller is not offered one twice.
-    spoken = fallbackFor(records.escalationExists);
-    answerType = records.escalationExists ? "escalate" : "decline";
+    // Before the limit, ask the same question again rather than reaching for a specialist.
+    const giveUp = records.escalationExists || failedRecoveries + 1 >= RECOVERY_LIMIT;
+    spoken = giveUp ? fallbackFor(records.escalationExists) : rephraseLine(lastQuestion);
+    answerType = records.escalationExists ? "escalate" : giveUp ? "decline" : "clarify";
     note = `speech guard: ${guard.reasons.join(",")}. ${said}`;
   }
 

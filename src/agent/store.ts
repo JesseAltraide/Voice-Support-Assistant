@@ -109,6 +109,29 @@ export async function recentAnswerTypes(conversationId: string, limit: number): 
   return (data ?? []).map((r) => r.answer_type as string);
 }
 
+export interface RecentTurn {
+  answerType: string | null;
+  guardTripped: boolean;
+  assistant: string | null;
+}
+
+/** Recent turns, newest first, with enough detail to see a run of failed recovery attempts. */
+export async function recentTurns(conversationId: string, limit: number): Promise<RecentTurn[]> {
+  const { data, error } = await db()
+    .from("conversation_turns")
+    .select("answer_type,speech_guard_tripped,assistant_response")
+    .eq("conversation_id", conversationId)
+    .not("answer_type", "is", null)
+    .order("created_at", { ascending: false })
+    .limit(limit);
+  check(error, "recent turns");
+  return (data ?? []).map((r) => ({
+    answerType: r.answer_type as string | null,
+    guardTripped: r.speech_guard_tripped === true,
+    assistant: (r.assistant_response as string | null) ?? null,
+  }));
+}
+
 /** Only turns the caller actually got an answer to. A turn abandoned mid-flight has no answer type. */
 export async function answeredCallerTexts(conversationId: string): Promise<string[]> {
   const { data, error } = await db()
