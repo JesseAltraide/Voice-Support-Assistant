@@ -14,7 +14,8 @@
     "mcp": "tsx src/mcp/server.ts",
     "seed": "node db/seed.mjs && node db/ingest-knowledge.mjs",
     "test": "vitest run",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "eval": "tsx src/eval/run.ts"
   },
   "license": "ISC",
   "dependencies": {
