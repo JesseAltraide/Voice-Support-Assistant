@@ -31,6 +31,12 @@ function requireAuth(req: Request, res: Response, next: NextFunction): void {
   const header = (req.headers.authorization ?? "").trim();
   const supplied = Buffer.from(header.toLowerCase().startsWith("bearer ") ? header.slice(7).trim() : header);
   if (supplied.length !== expected.length || !timingSafeEqual(supplied, expected)) {
+    // Shape only, never the value: a rejected call otherwise gives no clue whether the caller sent
+    // nothing, a truncated token, or the right length with the wrong content.
+    const shape = header
+      ? `scheme=${header.toLowerCase().startsWith("bearer ") ? "Bearer" : "none"} length=${supplied.length} expected=${expected.length}`
+      : "no authorization header";
+    console.warn(`401 on ${req.method} ${req.path}: ${shape}`);
     res.status(401).json({ error: "unauthorised" });
     return;
   }
