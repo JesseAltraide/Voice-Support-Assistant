@@ -158,6 +158,14 @@ Render provides `PORT`; the agent server takes it and binds `0.0.0.0`.
 - **No per-caller rate limit.** `GET /config` is unauthenticated, so anyone with the URL can
   start calls against the assistant. Bound it in the Vapi dashboard with an origin allow-list
   and a call-duration cap.
+- **An echo can end a call.** Speech-to-text sometimes returns the assistant's own voice. The
+  closing detector treats a farewell as the caller signing off, so if the assistant says
+  something like "have a good day" mid-call and that comes back as caller speech, the call
+  ends. Known and unfixed: the detector does not yet compare an utterance against the line
+  just spoken.
+- **Handoff email needs SMTP configured.** Without `SMTP_USER`, `SMTP_APP_PASSWORD` and a valid
+  `SUPPORT_INBOX_EMAIL`, briefs are written and queued but never delivered. The dispatcher
+  fails closed and leaves them `pending`, so they go out once it is configured.
 - **In-process locking only.** One agent instance is assumed; two would need shared locking.
 - **No turn idempotency.** A retried turn is a new turn.
 

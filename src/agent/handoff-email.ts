@@ -18,6 +18,23 @@ const MAX_ATTEMPTS = 5;
 const CLAIM_STALE_MS = 10 * 60_000;
 /** Bounded so one sweep cannot run long enough to overlap the next. */
 const BATCH = 10;
+/** First wait after a failure; each subsequent attempt doubles it. */
+const BACKOFF_BASE_MS = 2 * 60_000;
+/** Ceiling on a single wait, so a long outage is still retried at a sensible rate. */
+const BACKOFF_CAP_MS = 30 * 60_000;
+
+/**
+ * How long to wait before trying a failed row again.
+ *
+ * Without this the sweep retried every 60 seconds and spent all five attempts in five minutes,
+ * so any mail outage longer than that — a provider restarting, a rate limit, a DNS blip —
+ * permanently parked the escalation at "failed" while the caller had been told a representative
+ * would follow up. Doubling from two minutes spreads the same five attempts across roughly half
+ * an hour, which covers the outages a mail provider actually has.
+ */
+export function backoffMs(attempts: number): number {
+  return Math.min(BACKOFF_BASE_MS * 2 ** Math.max(0, attempts - 1), BACKOFF_CAP_MS);
+}
 
 export interface HandoffEmail {
   to: string;
@@ -67,6 +84,26 @@ interface SmtpConfig {
  * address before an escalation is created; the address that receives the whole conversation
  * deserves it more, not less.
  */
+/**
+ * Whether a row should be attempted now.
+ *
+ * Expressed in code rather than in the query because the wait depends on the row's own attempt
+ * count, which SQL filters cannot express without another column. The batch is small, so the
+ * cost is a few rows read and skipped.
+ */
+export function isDue(row: Pick<EscalationRow, "handoff_email_status" | "handoff_email_attempts" | "handoff_email_claimed_at">, now: number): boolean {
+  const claimedAt = row.handoff_email_claimed_at ? Date.parse(row.handoff_email_claimed_at) : null;
+
+  // Never claimed: nothing has been tried, so it is due regardless of status. A "sending" row
+  // with no claim timestamp should not be stranded either.
+  if (claimedAt === null || Number.isNaN(claimedAt)) return true;
+
+  // Still in flight somewhere until the claim goes stale, at which point it is recoverable.
+  if (row.handoff_email_status === "sending") return now - claimedAt >= CLAIM_STALE_MS;
+
+  return now - claimedAt >= backoffMs(row.handoff_email_attempts);
+}
+
 function smtpConfig(): { cfg: SmtpConfig } | { reason: string } {
   const { SMTP_HOST, SMTP_PORT, SMTP_USER, SMTP_APP_PASSWORD, SUPPORT_INBOX_EMAIL } = process.env;
   if (!SMTP_HOST || !SMTP_USER || !SMTP_APP_PASSWORD || !SUPPORT_INBOX_EMAIL) {
@@ -151,20 +188,23 @@ export async function dispatchHandoffEmails(
   const cfg = config.cfg;
 
   const db = getDb();
-  const staleBefore = new Date(Date.now() - CLAIM_STALE_MS).toISOString();
+  const now = Date.now();
+  // Waiting rows are read and skipped rather than filtered in SQL: how long each must wait
+  // depends on its own attempt count. A slightly wider read keeps the policy in one readable
+  // place, at the cost of a few rows per sweep.
   const { data, error } = await db
     .from("escalations")
     .select("id,conversation_id,user_name,user_email,category,reason,handoff_summary,handoff_email_status,handoff_email_attempts,handoff_email_claimed_at")
     .in("handoff_email_status", ["pending", "failed", "sending"])
     .lt("handoff_email_attempts", MAX_ATTEMPTS)
-    // A "sending" row is only retaken once its claim has gone stale, so a send in flight is
-    // left alone while one abandoned by a dead process is recovered.
-    .or(`handoff_email_status.neq.sending,handoff_email_claimed_at.lt.${staleBefore}`)
     .order("created_at", { ascending: true })
-    .limit(BATCH);
+    // Read wider than the batch and cap after filtering: the limit applies before the due
+    // check, so a handful of rows still waiting out their backoff must not crowd out a newer
+    // one that is ready to send.
+    .limit(BATCH * 3);
   if (error) throw new Error(error.message);
 
-  const rows = (data ?? []) as EscalationRow[];
+  const rows = ((data ?? []) as EscalationRow[]).filter((row) => isDue(row, now)).slice(0, BATCH);
   let sent = 0;
   let failed = 0;
 

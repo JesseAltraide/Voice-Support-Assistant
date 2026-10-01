@@ -1,5 +1,7 @@
 import { afterEach, describe, expect, test } from "vitest";
-import { composeHandoffEmail, dispatchHandoffEmails, type EscalationRow } from "./handoff-email.js";
+import { backoffMs, composeHandoffEmail, dispatchHandoffEmails, isDue, type EscalationRow } from "./handoff-email.js";
+
+const MINUTE = 60_000;
 
 const ROW: EscalationRow = {
   id: "esc-1",
@@ -44,6 +46,59 @@ describe("the message support receives", () => {
   test("says so plainly when no brief was recorded, rather than sending a gap", () => {
     const mailWithout = composeHandoffEmail({ ...ROW, handoff_summary: null }, "support@relaypay.example");
     expect(mailWithout.text).toContain("No handoff brief was recorded");
+  });
+});
+
+// M13: without backoff the sweep spent all five attempts in five minutes, so any mail outage
+// longer than that parked the escalation at "failed" for good.
+describe("retry pacing", () => {
+  test("each failure waits longer than the last", () => {
+    expect(backoffMs(1)).toBe(2 * MINUTE);
+    expect(backoffMs(2)).toBe(4 * MINUTE);
+    expect(backoffMs(3)).toBe(8 * MINUTE);
+    expect(backoffMs(4)).toBe(16 * MINUTE);
+  });
+
+  test("a single wait is capped, so a long outage is still retried at a sensible rate", () => {
+    expect(backoffMs(10)).toBe(30 * MINUTE);
+    expect(backoffMs(99)).toBe(30 * MINUTE);
+  });
+
+  test("five attempts span half an hour, not five minutes", () => {
+    const total = [1, 2, 3, 4].reduce((sum, n) => sum + backoffMs(n), 0);
+    expect(total).toBeGreaterThanOrEqual(30 * MINUTE);
+  });
+
+  const at = (status: string, attempts: number, claimedMinutesAgo: number | null) => ({
+    handoff_email_status: status,
+    handoff_email_attempts: attempts,
+    handoff_email_claimed_at: claimedMinutesAgo === null ? null : new Date(Date.now() - claimedMinutesAgo * MINUTE).toISOString(),
+  });
+
+  test("a never-claimed row is due immediately", () => {
+    expect(isDue(at("pending", 0, null), Date.now())).toBe(true);
+  });
+
+  test("a failed row waits out its backoff, then becomes due", () => {
+    expect(isDue(at("failed", 1, 1), Date.now())).toBe(false);
+    expect(isDue(at("failed", 1, 3), Date.now())).toBe(true);
+    expect(isDue(at("failed", 3, 5), Date.now())).toBe(false);
+    expect(isDue(at("failed", 3, 9), Date.now())).toBe(true);
+  });
+
+  test("a send in flight is left alone until its claim goes stale", () => {
+    expect(isDue(at("sending", 1, 2), Date.now())).toBe(false);
+    expect(isDue(at("sending", 1, 11), Date.now())).toBe(true);
+  });
+
+  test("a sending row with no claim timestamp is recoverable rather than stranded", () => {
+    // Only reachable by editing rows by hand, but being stuck forever is the worse outcome.
+    expect(isDue(at("sending", 1, null), Date.now())).toBe(true);
+  });
+
+  test("an unparseable timestamp is treated as due rather than blocking delivery", () => {
+    const row = { handoff_email_status: "failed", handoff_email_attempts: 1, handoff_email_claimed_at: "not a date" };
+    expect(isDue(row, Date.now())).toBe(true);
   });
 });
 
