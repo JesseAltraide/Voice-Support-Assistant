@@ -64,9 +64,28 @@ app.get("/health", (_req, res) => {
 // requireAuth below, which otherwise gates every remaining route: a caller has no bearer token.
 // Only the *public* Vapi key is exposed here. VAPI_PRIVATE_KEY is account-scoped and never
 // leaves the server.
-app.use(express.static(fileURLToPath(new URL("../../public", import.meta.url))));
+// The page asks for a microphone, so the headers that matter are the ones bounding who may
+// do that and who may frame the Start button: a framed page could be used to start calls the
+// caller did not intend, which costs real money.
+app.use((_req, res, next) => {
+  res.setHeader("Permissions-Policy", "microphone=(self), camera=(), geolocation=()");
+  res.setHeader("X-Frame-Options", "DENY");
+  res.setHeader("Content-Security-Policy", "frame-ancestors 'none'");
+  res.setHeader("X-Content-Type-Options", "nosniff");
+  res.setHeader("Referrer-Policy", "no-referrer");
+  res.setHeader("Strict-Transport-Security", "max-age=31536000");
+  next();
+});
+
+app.use(express.static(fileURLToPath(new URL("../../public", import.meta.url)), {
+  dotfiles: "deny",
+  index: ["index.html"],
+  redirect: false,
+}));
 
 app.get("/config", (_req, res) => {
+  // Not cached: a value fixed at an edge would outlive a key rotation.
+  res.setHeader("Cache-Control", "no-store");
   res.json({
     publicKey: process.env.VAPI_PUBLIC_KEY ?? "",
     assistantId: process.env.VAPI_ASSISTANT_ID ?? "",

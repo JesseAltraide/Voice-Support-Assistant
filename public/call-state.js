@@ -19,9 +19,10 @@
 export const END_TIMEOUT_MS = 4000;
 
 /**
- * @typedef {"startup"|"unavailable"|"blocked"|"idle"|"connecting"|"live"|"ending"|"ended"|"lost"|"failed"} Phase
- * @typedef {{ phase: Phase, speaking: boolean, message: string }} State
- * @typedef {"stop-call"|"arm-end-timer"|"cancel-end-timer"} Effect
+ * @typedef {"startup"|"unavailable"|"blocked"|"idle"|"requesting-microphone"|"connecting"|"live"|"ending"|"ended"|"lost"|"failed"} Phase
+ * @typedef {"listening"|"thinking"|"speaking"} Activity
+ * @typedef {{ phase: Phase, activity: Activity, message: string }} State
+ * @typedef {"stop-call"|"arm-end-timer"|"cancel-end-timer"|"clear-transcript"} Effect
  * @typedef {{ state: State, effects: Effect[] }} Step
  */
 
@@ -33,7 +34,7 @@ const CALL_MAY_BE_RUNNING = new Set(["connecting", "live", "ending"]);
 
 /** @returns {State} */
 export function initialState() {
-  return { phase: "startup", speaking: false, message: "" };
+  return { phase: "startup", activity: "listening", message: "" };
 }
 
 /**
@@ -44,7 +45,7 @@ export function initialState() {
 export function reduce(state, event) {
   const stay = { state, effects: [] };
   const to = (phase, patch = {}, effects = []) => ({
-    state: { phase, speaking: false, message: "", ...patch },
+    state: { phase, activity: "listening", message: "", ...patch },
     effects,
   });
 
@@ -62,16 +63,32 @@ export function reduce(state, event) {
       // Refusing this outside a startable phase is half of H1: after an error arrives
       // mid-call the page shows a button again, and without this guard pressing it would
       // open a second call on top of the first.
-      return STARTABLE.has(state.phase) ? to("connecting") : stay;
+      // Clearing the transcript keeps a second call from appending under the first.
+      // The first stop is the permission prompt, not the connection. Calling that wait
+      // "Connecting" would be the page describing work it has not started, and the prompt
+      // is modal and open-ended, so the caller could sit on that lie indefinitely.
+      return STARTABLE.has(state.phase) ? to("requesting-microphone", {}, ["clear-transcript"]) : stay;
+
+    case "microphone-granted":
+      return state.phase === "requesting-microphone" ? to("connecting") : stay;
 
     case "call-started":
       return to("live");
 
+    case "caller-finished":
+      // The gap between the caller finishing and the assistant speaking runs to several
+      // seconds on the hosted tier. Calling that gap "Listening" is the page asserting
+      // something untrue at the one moment a caller is most likely to think it has hung up.
+      // It stays "Assistant speaking" through a barge-in, though: the caller talking over
+      // the assistant does not stop the assistant, and the page should not say it has.
+      if (state.phase !== "live" || state.activity === "speaking") return stay;
+      return to("live", { activity: "thinking" });
+
     case "speech-started":
-      return state.phase === "live" ? to("live", { speaking: true }) : stay;
+      return state.phase === "live" ? to("live", { activity: "speaking" }) : stay;
 
     case "speech-ended":
-      return state.phase === "live" ? to("live", { speaking: false }) : stay;
+      return state.phase === "live" ? to("live", { activity: "listening" }) : stay;
 
     case "end-clicked":
       // Arming the timer here is H2: the reset must not depend on "call-ended" arriving,
@@ -106,10 +123,11 @@ export function reduce(state, event) {
 }
 
 const STATUS = {
-  startup: "Checking your microphone",
+  startup: "Getting ready",
   unavailable: "Unavailable",
   blocked: "Microphone unavailable",
   idle: "Ready when you are",
+  "requesting-microphone": "Waiting for microphone access",
   connecting: "Connecting",
   ending: "Ending",
   ended: "Call ended",
@@ -117,22 +135,24 @@ const STATUS = {
   failed: "Could not start the call",
 };
 
+const ACTIVITY = { listening: "Listening", thinking: "Thinking", speaking: "Assistant speaking" };
+
 const TONE = { unavailable: "error", blocked: "warn", lost: "error", failed: "error", live: "live" };
 
 const START_LABEL = { connecting: "Connecting", ended: "Start another call", lost: "Try again", failed: "Try again" };
 
 /**
- * Everything the page needs to render, derived from the phase alone. Keeping this a pure
+ * Everything the page needs to render, derived from the state alone. Keeping this a pure
  * function is what stops the page from drifting into a state it was never put in.
  *
  * @param {State} state
  */
 export function view(state) {
-  const { phase, speaking, message } = state;
+  const { phase, activity, message } = state;
   const inCall = phase === "live" || phase === "ending";
 
   return {
-    status: phase === "live" ? (speaking ? "Assistant speaking" : "Listening") : STATUS[phase],
+    status: phase === "live" ? ACTIVITY[activity] : STATUS[phase],
     tone: TONE[phase] ?? null,
     start: {
       visible: !inCall,

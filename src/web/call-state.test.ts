@@ -8,13 +8,15 @@ function run(events: { type: string; message?: string }[]) {
   return events.reduce((state, event) => reduce(state, event).state, initialState());
 }
 
-const LIVE_CALL = [{ type: "ready" }, { type: "start-clicked" }, { type: "call-started" }];
+const ASKING = [{ type: "ready" }, { type: "start-clicked" }];
+const CONNECTING = [...ASKING, { type: "microphone-granted" }];
+const LIVE_CALL = [...CONNECTING, { type: "call-started" }];
 
 describe("startup", () => {
   test("starts disabled until the microphone and config have been checked", () => {
     const v = view(initialState());
     expect(v.start.enabled).toBe(false);
-    expect(v.status).toBe("Checking your microphone");
+    expect(v.status).toBe("Getting ready");
   });
 
   test("a blocked microphone disables the button and shows the reason", () => {
@@ -41,9 +43,41 @@ describe("startup", () => {
   });
 });
 
+// H3: the permission prompt is modal and open-ended, and the page used to call that wait
+// "Connecting" — describing work it had not started, with no way for the caller to tell.
+describe("H3 — the microphone prompt is its own state, not a lie about connecting", () => {
+  test("clicking start waits on the microphone before it claims to be connecting", () => {
+    const v = view(run(ASKING));
+    expect(v.status).toBe("Waiting for microphone access");
+    expect(v.start).toMatchObject({ visible: true, enabled: false });
+    expect(v.end.visible).toBe(false);
+  });
+
+  test("connecting begins only once permission is granted", () => {
+    expect(view(run(CONNECTING)).status).toBe("Connecting");
+  });
+
+  test("a refusal at the prompt is recoverable, not a dead end", () => {
+    const refused = run([...ASKING, { type: "start-failed", message: "Microphone access was refused." }]);
+    const v = view(refused);
+    expect(v.start).toMatchObject({ visible: true, enabled: true, label: "Try again" });
+    expect(v.reason).toBe("Microphone access was refused.");
+  });
+
+  test("a second click while the prompt is open is ignored", () => {
+    const asking = run(ASKING);
+    expect(reduce(asking, { type: "start-clicked" }).state).toEqual(asking);
+  });
+
+  test("permission granted out of nowhere cannot fake a connection", () => {
+    const idle = run([{ type: "ready" }]);
+    expect(reduce(idle, { type: "microphone-granted" }).state).toEqual(idle);
+  });
+});
+
 describe("a normal call", () => {
   test("connecting disables start without hiding it", () => {
-    const v = view(run([{ type: "ready" }, { type: "start-clicked" }]));
+    const v = view(run(CONNECTING));
     expect(v.start.visible).toBe(true);
     expect(v.start.enabled).toBe(false);
     expect(v.start.label).toBe("Connecting");
@@ -60,6 +94,74 @@ describe("a normal call", () => {
     const speaking = run([...LIVE_CALL, { type: "speech-started" }]);
     expect(view(speaking).status).toBe("Assistant speaking");
     expect(view(reduce(speaking, { type: "speech-ended" }).state).status).toBe("Listening");
+  });
+
+  test("a new call clears the previous call's transcript", () => {
+    const ended = run([...LIVE_CALL, { type: "call-ended" }]);
+    expect(reduce(ended, { type: "start-clicked" }).effects).toContain("clear-transcript");
+  });
+
+  test("a refused start does not clear the transcript of the call still running", () => {
+    const live = run(LIVE_CALL);
+    expect(reduce(live, { type: "start-clicked" }).effects).toEqual([]);
+  });
+});
+
+// M1: the gap between the caller finishing and the assistant speaking runs to several seconds
+// on the hosted tier, and the page used to call that gap "Listening".
+describe("M1 — the wait is reported as thinking, not listening", () => {
+  test("the page says Thinking once the caller has finished", () => {
+    const v = view(run([...LIVE_CALL, { type: "caller-finished" }]));
+    expect(v.status).toBe("Thinking");
+    expect(v.tone).toBe("live");
+  });
+
+  test("thinking gives way to speaking when the assistant starts", () => {
+    const thinking = run([...LIVE_CALL, { type: "caller-finished" }]);
+    expect(view(reduce(thinking, { type: "speech-started" }).state).status).toBe("Assistant speaking");
+  });
+
+  test("the assistant finishing returns to listening, not to thinking", () => {
+    const after = run([
+      ...LIVE_CALL,
+      { type: "caller-finished" },
+      { type: "speech-started" },
+      { type: "speech-ended" },
+    ]);
+    expect(view(after).status).toBe("Listening");
+  });
+
+  test("barge-in does not claim the assistant is thinking while it is still speaking", () => {
+    const speaking = run([...LIVE_CALL, { type: "speech-started" }]);
+    const interrupted = reduce(speaking, { type: "caller-finished" });
+    expect(interrupted.state).toEqual(speaking);
+    expect(view(interrupted.state).status).toBe("Assistant speaking");
+  });
+
+  test("the assistant finishing after a barge-in still returns to listening", () => {
+    const after = run([
+      ...LIVE_CALL,
+      { type: "speech-started" },
+      { type: "caller-finished" },
+      { type: "speech-ended" },
+    ]);
+    expect(view(after).status).toBe("Listening");
+  });
+
+  test("a caller transcript arriving after the call ended cannot show Thinking", () => {
+    const ended = run([...LIVE_CALL, { type: "call-ended" }, { type: "caller-finished" }]);
+    expect(view(ended).status).toBe("Call ended");
+  });
+
+  test("a fresh call starts at listening rather than inheriting the last activity", () => {
+    const again = run([
+      ...LIVE_CALL,
+      { type: "caller-finished" },
+      { type: "call-ended" },
+      { type: "start-clicked" },
+      { type: "call-started" },
+    ]);
+    expect(view(again).status).toBe("Listening");
   });
 
   test("hanging up offers another call", () => {
@@ -81,12 +183,12 @@ describe("H1 — an error must stop the call, not just relabel the page", () => 
   });
 
   test("an error while connecting also stops the call, since it may be half open", () => {
-    const connecting = run([{ type: "ready" }, { type: "start-clicked" }]);
+    const connecting = run(CONNECTING);
     expect(reduce(connecting, { type: "error" }).effects).toContain("stop-call");
   });
 
   test("a failed start stops the call rather than assuming it never opened", () => {
-    const connecting = run([{ type: "ready" }, { type: "start-clicked" }]);
+    const connecting = run(CONNECTING);
     const step = reduce(connecting, { type: "start-failed", message: "denied" });
     expect(step.effects).toContain("stop-call");
     expect(view(step.state).status).toBe("Could not start the call");
@@ -123,7 +225,7 @@ describe("H1 — a second call cannot be stacked on a running one", () => {
   });
 
   test("clicking start while connecting is ignored", () => {
-    const connecting = run([{ type: "ready" }, { type: "start-clicked" }]);
+    const connecting = run(CONNECTING);
     expect(reduce(connecting, { type: "start-clicked" }).state).toEqual(connecting);
   });
 
@@ -135,7 +237,7 @@ describe("H1 — a second call cannot be stacked on a running one", () => {
   test("starting again is allowed only once the call is really over", () => {
     for (const closing of [{ type: "call-ended" }, { type: "error" }]) {
       const closed = run([...LIVE_CALL, closing]);
-      expect(reduce(closed, { type: "start-clicked" }).state.phase).toBe("connecting");
+      expect(reduce(closed, { type: "start-clicked" }).state.phase).toBe("requesting-microphone");
     }
   });
 
@@ -201,14 +303,15 @@ describe("the page never claims a state it is not in", () => {
       [{ type: "ready" }],
       [{ type: "mic-blocked", message: "x" }],
       [{ type: "config-failed", message: "x" }],
-      [{ type: "ready" }, { type: "start-clicked" }],
+      ASKING,
+      CONNECTING,
       LIVE_CALL,
       [...LIVE_CALL, { type: "speech-started" }],
       [...LIVE_CALL, { type: "end-clicked" }],
       [...LIVE_CALL, { type: "end-clicked" }, { type: "end-timeout" }],
       [...LIVE_CALL, { type: "call-ended" }],
       [...LIVE_CALL, { type: "error", message: "x" }],
-      [{ type: "ready" }, { type: "start-clicked" }, { type: "start-failed", message: "x" }],
+      [...CONNECTING, { type: "start-failed", message: "x" }],
     ];
 
     for (const path of paths) {
@@ -219,15 +322,15 @@ describe("the page never claims a state it is not in", () => {
 
   test("the live indicator is only used while a call is actually running", () => {
     for (const phase of terminal) {
-      const state = { phase, speaking: false, message: "" };
+      const state = { phase, activity: "listening", message: "" };
       expect(view(state as never).tone).not.toBe("live");
     }
   });
 
   test("every phase renders a status line, so the page is never blank", () => {
-    const phases = ["startup", "unavailable", "blocked", "idle", "connecting", "live", "ending", ...terminal];
+    const phases = ["startup", "unavailable", "blocked", "idle", "requesting-microphone", "connecting", "live", "ending", ...terminal];
     for (const phase of phases) {
-      const v = view({ phase, speaking: false, message: "" } as never);
+      const v = view({ phase, activity: "listening", message: "" } as never);
       expect(v.status, phase).toBeTruthy();
     }
   });

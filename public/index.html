@@ -70,11 +70,15 @@
     <h1>Support</h1>
     <p class="lede">Speak to our support assistant about payments, invoices, payouts or your account.</p>
 
-    <div class="status"><span class="dot" id="dot"></span><span id="status"></span></div>
+    <!-- The status line is the page's only running commentary on the call, so it has to be
+         announced. The dot repeats it in colour alone and is skipped. -->
+    <div class="status" role="status"><span class="dot" id="dot" aria-hidden="true"></span><span id="status"></span></div>
 
     <button id="start">Start call</button>
     <button id="end" class="secondary" hidden>End call</button>
-    <p class="reason" id="reason" hidden></p>
+    <!-- A refusal or a dropped call interrupts what the caller was doing, so it interrupts
+         the screen reader too, rather than queueing behind the status line. -->
+    <p class="reason" id="reason" role="alert" hidden></p>
     <p class="hint" id="hint">Your microphone is used only while the call is running.</p>
 
     <section class="transcript" id="transcript" hidden aria-live="polite"></section>
@@ -82,7 +86,9 @@
 </main>
 
 <script type="module">
-import Vapi from "https://esm.sh/@vapi-ai/web@2";
+// Pinned exactly, not to the @2 range. This script shares an origin with the microphone
+// permission and the public key, so it should not silently become a different build.
+import Vapi from "https://esm.sh/@vapi-ai/web@2.7.1";
 import { initialState, reduce, view, END_TIMEOUT_MS } from "./call-state.js";
 
 const el = (id) => document.getElementById(id);
@@ -128,6 +134,11 @@ function perform(effect) {
   if (effect === "cancel-end-timer") {
     clearTimeout(endTimer);
     endTimer = null;
+    return;
+  }
+  if (effect === "clear-transcript") {
+    transcript.replaceChildren();
+    transcript.hidden = true;
   }
 }
 
@@ -144,9 +155,11 @@ function render() {
   endBtn.hidden = !v.end.visible;
   endBtn.disabled = !v.end.enabled;
 
-  reason.textContent = v.reason;
-  reason.className = v.reasonTone === "warn" ? "reason" : "reason error";
+  // Unhidden before the text is written: a live region that is still hidden when its content
+  // changes is not reliably announced, so the order here is what makes the alert audible.
   reason.hidden = !v.reason;
+  reason.className = v.reasonTone === "warn" ? "reason" : "reason error";
+  reason.textContent = v.reason;
 
   hint.hidden = !v.hintVisible;
 }
@@ -173,20 +186,37 @@ async function loadConfig() {
   return body;
 }
 
-// Checked before the first click so the button refuses with a visible reason, rather than
-// failing after the caller has already committed to starting a call.
-async function checkMicrophone() {
+/**
+ * A passive check, so the page does not raise a permission prompt before the caller has asked
+ * for anything. It can only report a standing refusal; a browser that will prompt reports
+ * nothing, and the real request happens on click, where the caller has given a reason for it.
+ */
+async function standingMicrophoneRefusal() {
   if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
     return "This browser cannot use a microphone. Try Chrome, Edge or Safari.";
   }
+  try {
+    const status = await navigator.permissions.query({ name: "microphone" });
+    return status.state === "denied"
+      ? "Microphone access is blocked. Allow it in your browser settings, then reload this page."
+      : null;
+  } catch {
+    // Not every browser can be asked about the microphone without prompting. Say nothing and
+    // find out on click rather than prompting now.
+    return null;
+  }
+}
+
+/** Asks for the microphone at the moment the caller has asked for a call. */
+async function microphoneRefusal() {
   try {
     const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
     stream.getTracks().forEach((track) => track.stop());
     return null;
   } catch (err) {
     return err && err.name === "NotAllowedError"
-      ? "Microphone access is blocked. Allow it in your browser settings, then reload this page."
-      : "No microphone was found. Connect one and reload this page.";
+      ? "Microphone access was refused, so the call cannot start."
+      : "No microphone was found. Connect one and try again.";
   }
 }
 
@@ -201,9 +231,14 @@ function attach(instance) {
   });
   instance.on("message", (msg) => {
     const isFinal = msg && msg.type === "transcript" && msg.transcriptType === "final";
-    if (isFinal && typeof msg.transcript === "string" && msg.transcript.trim()) {
-      addLine(msg.role === "assistant" ? "Assistant" : "You", msg.transcript.trim());
-    }
+    if (!isFinal || typeof msg.transcript !== "string" || !msg.transcript.trim()) return;
+
+    const fromAssistant = msg.role === "assistant";
+    addLine(fromAssistant ? "Assistant" : "You", msg.transcript.trim());
+    // A final caller transcript is the last signal before the wait for the model, which runs
+    // to several seconds. Reporting that wait as "Thinking" is the difference between a pause
+    // the caller understands and one they read as the line having dropped.
+    if (!fromAssistant) dispatch({ type: "caller-finished" });
   });
 }
 
@@ -214,7 +249,21 @@ startBtn.addEventListener("click", async () => {
   // click on the error screen from stacking a second call on top of the first.
   if (state === before) return;
 
+  // The page is now in "requesting-microphone", so the permission prompt the caller is
+  // looking at is the thing the status line is describing.
+  const refusal = await microphoneRefusal();
+  if (refusal) {
+    dispatch({ type: "start-failed", message: refusal });
+    return;
+  }
+  dispatch({ type: "microphone-granted" });
+
   try {
+    // One instance, reused across calls. Checked against the pinned SDK rather than assumed:
+    // stop() sets started=false, destroys the underlying call and nulls it, and start() only
+    // refuses while started is true, so a second call is accepted. The listeners attached
+    // here live on the Vapi emitter, which stop() does not clear, and the SDK re-registers
+    // its own per-call listeners on each start, so every event still arrives exactly once.
     if (!vapi) {
       vapi = new Vapi(config.publicKey);
       attach(vapi);
@@ -244,8 +293,8 @@ endBtn.addEventListener("click", () => {
     dispatch({ type: "config-failed", message: err.message });
     return;
   }
-  const problem = await checkMicrophone();
-  dispatch(problem ? { type: "mic-blocked", message: problem } : { type: "ready" });
+  const refusal = await standingMicrophoneRefusal();
+  dispatch(refusal ? { type: "mic-blocked", message: refusal } : { type: "ready" });
 })();
 </script>
 </body>
