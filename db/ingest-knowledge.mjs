@@ -1,10 +1,10 @@
 import { readFileSync } from "node:fs";
-import { adminClient, BRIEF_DIR } from "./lib.mjs";
+import { adminClient, briefDir } from "./lib.mjs";
 
 // Chunk the approved knowledge base by heading. Each "###" entry (including each FAQ
 // question) is its own chunk; text under a "##" heading before its first "###" is one
 // chunk. Slugs are stable (section--title), so re-ingesting upserts instead of duplicating.
-const md = readFileSync(`${BRIEF_DIR}/assets/relaypay-knowledge-base.md`, "utf8").replace(/\r\n/g, "\n");
+const md = readFileSync(`${briefDir()}/assets/relaypay-knowledge-base.md`, "utf8").replace(/\r\n/g, "\n");
 
 const slugify = (s) => s.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "");
 const firstSentence = (s) => {

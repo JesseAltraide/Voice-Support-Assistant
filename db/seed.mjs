@@ -1,6 +1,6 @@
 import { readFileSync } from "node:fs";
 import { parse } from "csv-parse/sync";
-import { adminClient, BRIEF_DIR } from "./lib.mjs";
+import { adminClient, briefDir } from "./lib.mjs";
 
 // Boundary normalisation: CRLF is handled by the parser, blank cells become NULL,
 // values are trimmed. Status text such as "review required" is kept as written;
@@ -9,7 +9,7 @@ const blank = (v) => (v === undefined || v === null || String(v).trim() === "" ?
 const num = (v) => (blank(v) === null ? null : Number(v));
 
 function load(name) {
-  const text = readFileSync(`${BRIEF_DIR}/assets/seed-data/${name}.csv`, "utf8");
+  const text = readFileSync(`${briefDir()}/assets/seed-data/${name}.csv`, "utf8");
   return parse(text, { columns: true, skip_empty_lines: true, bom: true });
 }
 
