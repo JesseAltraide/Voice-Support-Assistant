@@ -106,6 +106,10 @@ async function rebuildNote(conversationId: string): Promise<string> {
 
 async function failTurn(conversationId: string, turnId: string | null, err: unknown, started: number): Promise<TurnResult> {
   const reason = err instanceof Error ? err.message : String(err);
+  // Logged to stdout as well as to the turn row. The row is the audit trail, but it is no use when
+  // the database is the thing that failed, and an operator reading platform logs would otherwise
+  // see a call fail with no line explaining why.
+  console.error(`turn failed for conversation ${conversationId}:`, reason);
   // Written by the server, not the agent. The ticket is attempted first and the spoken line follows
   // what actually landed: if the database is what failed, the apology does not claim it was logged.
   const logged = await store.failConversation(conversationId, reason).catch(() => {

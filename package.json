@@ -8,6 +8,7 @@
     "node": ">=22"
   },
   "scripts": {
+    "start": "tsx src/start.ts",
     "start:agent": "tsx src/agent/server.ts",
     "start:mcp": "tsx src/mcp/server.ts",
     "mcp": "tsx src/mcp/server.ts",

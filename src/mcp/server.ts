@@ -71,8 +71,12 @@ app.use((_err: unknown, _req: Request, res: Response, _next: NextFunction) => {
   res.status(400).json({ error: "bad_request" });
 });
 
-const port = Number(process.env.PORT ?? process.env.MCP_PORT ?? 3001);
-const host = process.env.HOST ?? (process.env.PORT ? "0.0.0.0" : "127.0.0.1");
+// Co-hosted with the agent server (src/start.ts): bind loopback on our own port, because the
+// platform's PORT belongs to the public agent server and this one must not be reachable from
+// outside the container. Deployed alone, behave normally and take PORT.
+const colocated = process.env.MCP_COLOCATED === "1";
+const port = Number(colocated ? (process.env.MCP_PORT ?? 3001) : (process.env.PORT ?? process.env.MCP_PORT ?? 3001));
+const host = colocated ? "127.0.0.1" : (process.env.HOST ?? (process.env.PORT ? "0.0.0.0" : "127.0.0.1"));
 app.listen(port, host, () => {
   console.log(`MCP server listening on http://${host}:${port}/mcp`);
 });

@@ -14,8 +14,10 @@ import { vapiRouter } from "./vapi.js";
 const expected = Buffer.from(agentAuthToken());
 mcpAuthToken();
 requireEnv("ANTHROPIC_API_KEY");
-if (process.env.PORT && !process.env.MCP_SERVER_URL) {
-  throw new Error("MCP_SERVER_URL must be set when deployed; it defaults to localhost only for local runs");
+// Co-hosted, the localhost default is correct and MCP_SERVER_URL is not needed. Deployed apart,
+// that default would silently point at nothing, so require it.
+if (process.env.PORT && !process.env.MCP_SERVER_URL && process.env.MCP_COLOCATED !== "1") {
+  throw new Error("MCP_SERVER_URL must be set when the tool server is deployed separately");
 }
 getDb(); // Supabase credentials are read lazily, so touch the client once to validate them now.
 
