@@ -23,9 +23,13 @@ function plausibleId(value: unknown): string | null {
 }
 
 export function extractCallId(headers: Record<string, unknown>, body: Json): CallIdHit | null {
-  const header = headers["x-vapi-call-id"];
-  const fromHeader = plausibleId(Array.isArray(header) ? header[0] : header);
-  if (fromHeader) return { id: fromHeader, source: "header" };
+  // `x-call-id` is what Vapi actually sends, confirmed from a real call log; the others are kept
+  // as fallbacks in case the header name differs by transport or changes.
+  for (const name of ["x-call-id", "x-vapi-call-id"]) {
+    const raw = headers[name];
+    const id = plausibleId(Array.isArray(raw) ? raw[0] : raw);
+    if (id) return { id, source: `header ${name}` };
+  }
 
   const b = asObject(body);
   if (!b) return null;

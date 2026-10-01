@@ -37,6 +37,8 @@ describe("extractCallId", () => {
   const ID = "3f9a1b2c-1111-2222-3333-444455556666";
 
   it.each([
+    // Confirmed from a real Vapi call log: Vapi sends the id as X-Call-Id.
+    ["header x-call-id", { "x-call-id": ID }, {}],
     ["header x-vapi-call-id", { "x-vapi-call-id": ID }, {}],
     ["body.call.id", {}, { call: { id: ID } }],
     ["body.metadata.call.id", {}, { metadata: { call: { id: ID } } }],
@@ -48,7 +50,7 @@ describe("extractCallId", () => {
 
   it("reports where it was found, so the real Vapi shape can be confirmed from logs", () => {
     expect(extractCallId({}, { call: { id: ID } })?.source).toBe("body.call.id");
-    expect(extractCallId({ "x-vapi-call-id": ID }, {})?.source).toBe("header");
+    expect(extractCallId({ "x-call-id": ID }, {})?.source).toBe("header x-call-id");
   });
 
   it("prefers the header over the body when both are present", () => {

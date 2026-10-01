@@ -25,8 +25,11 @@ const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const MAX_MESSAGE_CHARS = 1000;
 
 function requireAuth(req: Request, res: Response, next: NextFunction): void {
-  const header = req.headers.authorization ?? "";
-  const supplied = Buffer.from(header.startsWith("Bearer ") ? header.slice(7) : "");
+  // Accept "Bearer <token>" and a bare token. Vapi's custom-LLM config sends the key in different
+  // shapes depending on how it is entered, and a mismatch there 401s every single turn of a call
+  // with no clue why. The secret itself is still required and still compared in constant time.
+  const header = (req.headers.authorization ?? "").trim();
+  const supplied = Buffer.from(header.toLowerCase().startsWith("bearer ") ? header.slice(7).trim() : header);
   if (supplied.length !== expected.length || !timingSafeEqual(supplied, expected)) {
     res.status(401).json({ error: "unauthorised" });
     return;
