@@ -1,0 +1,231 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>RelayPay Support</title>
+<style>
+  /* Brand direction: deep blue, teal accent, off-white. No gradients, no ornament.
+     The quality is meant to come from spacing and type hierarchy, not decoration. */
+  :root {
+    --blue: #123a6b;
+    --blue-dark: #0d2b50;
+    --teal: #0e7c86;
+    --bg: #f6f7f9;
+    --surface: #ffffff;
+    --ink: #1a1f2b;
+    --muted: #5b6676;
+    --line: #e2e6ec;
+    --warn: #8a5a00;
+    --error: #8c2f2f;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    min-height: 100vh;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 24px;
+    background: var(--bg);
+    color: var(--ink);
+    font: 16px/1.55 Inter, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  }
+  main { width: 100%; max-width: 520px; }
+  .brand { font-size: 15px; font-weight: 600; color: var(--blue); margin-bottom: 28px; }
+  .card { background: var(--surface); border: 1px solid var(--line); border-radius: 10px; padding: 40px 36px; }
+  h1 { margin: 0 0 8px; font-size: 24px; font-weight: 600; letter-spacing: -0.01em; }
+  .lede { margin: 0 0 32px; color: var(--muted); font-size: 15px; }
+
+  .status { display: flex; align-items: center; gap: 10px; min-height: 24px; margin-bottom: 24px; font-size: 14px; color: var(--muted); }
+  .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--line); flex: none; }
+  .dot.live { background: var(--teal); }
+  .dot.warn { background: var(--warn); }
+  .dot.error { background: var(--error); }
+
+  button {
+    width: 100%; padding: 13px 20px; font: inherit; font-weight: 500; color: #fff;
+    background: var(--blue); border: 1px solid var(--blue); border-radius: 7px; cursor: pointer;
+  }
+  button:hover:not(:disabled) { background: var(--blue-dark); border-color: var(--blue-dark); }
+  button:disabled { background: #aab3c0; border-color: #aab3c0; cursor: not-allowed; }
+  button.secondary { color: var(--blue); background: transparent; border-color: var(--line); }
+  button.secondary:hover:not(:disabled) { background: var(--bg); }
+
+  .reason { margin-top: 12px; font-size: 13.5px; color: var(--warn); }
+  .reason.error { color: var(--error); }
+  .hint { margin-top: 20px; font-size: 13px; color: var(--muted); }
+
+  .transcript { margin-top: 28px; border-top: 1px solid var(--line); padding-top: 20px; max-height: 260px; overflow-y: auto; }
+  .line { margin-bottom: 14px; font-size: 14.5px; }
+  .line .who { display: block; font-size: 12px; font-weight: 600; letter-spacing: 0.04em; text-transform: uppercase; color: var(--muted); margin-bottom: 3px; }
+  .line.agent .who { color: var(--teal); }
+  [hidden] { display: none !important; }
+</style>
+</head>
+<body>
+<main>
+  <div class="brand">RelayPay</div>
+  <div class="card">
+    <h1>Support</h1>
+    <p class="lede">Speak to our support assistant about payments, invoices, payouts or your account.</p>
+
+    <div class="status"><span class="dot" id="dot"></span><span id="status">Ready when you are</span></div>
+
+    <button id="start">Start call</button>
+    <button id="end" class="secondary" hidden>End call</button>
+    <p class="reason" id="reason" hidden></p>
+    <p class="hint" id="hint">Your microphone is used only while the call is running.</p>
+
+    <section class="transcript" id="transcript" hidden aria-live="polite"></section>
+  </div>
+</main>
+
+<script type="module">
+import Vapi from "https://esm.sh/@vapi-ai/web@2";
+
+const el = (id) => document.getElementById(id);
+const startBtn = el("start");
+const endBtn = el("end");
+const reason = el("reason");
+const transcript = el("transcript");
+const hint = el("hint");
+
+/** Every state shown here comes from a real call event. Nothing is guessed, and the page
+    never keeps claiming the call is live once it is not. */
+function setState(text, tone) {
+  el("status").textContent = text;
+  el("dot").className = tone ? "dot " + tone : "dot";
+}
+
+function showReason(text, isError) {
+  reason.textContent = text || "";
+  reason.className = isError ? "reason error" : "reason";
+  reason.hidden = !text;
+}
+
+function addLine(who, text) {
+  transcript.hidden = false;
+  const row = document.createElement("div");
+  row.className = who === "You" ? "line caller" : "line agent";
+  const label = document.createElement("span");
+  label.className = "who";
+  label.textContent = who;
+  const body = document.createElement("span");
+  body.textContent = text;
+  row.append(label, body);
+  transcript.append(row);
+  transcript.scrollTop = transcript.scrollHeight;
+}
+
+let vapi = null;
+let config = null;
+let live = false;
+
+async function loadConfig() {
+  const res = await fetch("/config");
+  if (!res.ok) throw new Error("The page could not reach the support service.");
+  const body = await res.json();
+  if (!body.publicKey || !body.assistantId) throw new Error("The voice service is not configured yet.");
+  return body;
+}
+
+// Checked before the first click so the button refuses with a visible reason, rather than
+// failing after the caller has already committed to starting a call.
+async function checkMicrophone() {
+  if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+    return "This browser cannot use a microphone. Try Chrome, Edge or Safari.";
+  }
+  try {
+    const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    stream.getTracks().forEach((track) => track.stop());
+    return null;
+  } catch (err) {
+    return err && err.name === "NotAllowedError"
+      ? "Microphone access is blocked. Allow it in your browser settings, then reload this page."
+      : "No microphone was found. Connect one and reload this page.";
+  }
+}
+
+function resetToIdle(label, state, tone, detail) {
+  live = false;
+  endBtn.hidden = true;
+  endBtn.disabled = false;
+  startBtn.hidden = false;
+  startBtn.disabled = false;
+  startBtn.textContent = label;
+  setState(state, tone);
+  showReason(detail, tone === "error");
+}
+
+(async function init() {
+  startBtn.disabled = true;
+  setState("Checking your microphone");
+  try {
+    config = await loadConfig();
+  } catch (err) {
+    setState("Unavailable", "error");
+    showReason(err.message, true);
+    return;
+  }
+  const problem = await checkMicrophone();
+  if (problem) {
+    setState("Microphone unavailable", "warn");
+    showReason(problem, false);
+    return;
+  }
+  startBtn.disabled = false;
+  setState("Ready when you are");
+})();
+
+startBtn.addEventListener("click", async () => {
+  startBtn.disabled = true; // disabled on click, so a double click cannot open two calls
+  startBtn.textContent = "Connecting";
+  setState("Connecting");
+  showReason("");
+
+  try {
+    vapi = new Vapi(config.publicKey);
+
+    vapi.on("call-start", () => {
+      live = true;
+      startBtn.hidden = true;
+      endBtn.hidden = false;
+      hint.hidden = true;
+      setState("Listening", "live");
+    });
+    vapi.on("speech-start", () => { if (live) setState("Assistant speaking", "live"); });
+    vapi.on("speech-end", () => { if (live) setState("Listening", "live"); });
+    vapi.on("message", (msg) => {
+      const isFinal = msg && msg.type === "transcript" && msg.transcriptType === "final";
+      if (isFinal && typeof msg.transcript === "string" && msg.transcript.trim()) {
+        addLine(msg.role === "assistant" ? "Assistant" : "You", msg.transcript.trim());
+      }
+    });
+    vapi.on("call-end", () => resetToIdle("Start another call", "Call ended", null, ""));
+    vapi.on("error", (err) => {
+      const detail = err && typeof err.errorMsg === "string" ? err.errorMsg : "The call could not continue.";
+      resetToIdle("Try again", "Connection lost", "error", detail);
+    });
+
+    await vapi.start(config.assistantId);
+  } catch (err) {
+    const detail = err && err.message ? err.message : "Something went wrong starting the call.";
+    resetToIdle("Try again", "Could not start the call", "error", detail);
+  }
+});
+
+endBtn.addEventListener("click", () => {
+  endBtn.disabled = true;
+  setState("Ending");
+  try {
+    if (vapi) vapi.stop();
+  } catch {
+    // The call-end handler normally resets the page; if stop throws, reset here so the
+    // page is never left showing "Ending" forever.
+    resetToIdle("Start another call", "Call ended", null, "");
+  }
+});
+</script>
+</body>
+</html>

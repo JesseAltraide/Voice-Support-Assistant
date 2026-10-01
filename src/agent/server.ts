@@ -1,4 +1,5 @@
 import { timingSafeEqual } from "node:crypto";
+import { fileURLToPath } from "node:url";
 import express, { type NextFunction, type Request, type Response } from "express";
 import { getDb, requireEnv } from "../shared/db.js";
 import { agentAuthToken, mcpAuthToken } from "./config.js";
@@ -57,6 +58,19 @@ app.disable("x-powered-by");
 
 app.get("/health", (_req, res) => {
   res.json({ ok: true });
+});
+
+// The caller-facing voice page and the two public values it needs. Both are mounted before
+// requireAuth below, which otherwise gates every remaining route: a caller has no bearer token.
+// Only the *public* Vapi key is exposed here. VAPI_PRIVATE_KEY is account-scoped and never
+// leaves the server.
+app.use(express.static(fileURLToPath(new URL("../../public", import.meta.url))));
+
+app.get("/config", (_req, res) => {
+  res.json({
+    publicKey: process.env.VAPI_PUBLIC_KEY ?? "",
+    assistantId: process.env.VAPI_ASSISTANT_ID ?? "",
+  });
 });
 
 // Vapi authenticates with the same bearer secret, set on the assistant's custom-LLM config and
