@@ -8,6 +8,10 @@
     "esModuleInterop": true,
     "skipLibCheck": true,
     "resolveJsonModule": true,
+    // The call state machine ships to the browser as plain JS with no build step, so the test
+    // that imports it from public/ needs JS resolution. checkJs stays off: the module carries
+    // JSDoc types for the editor, not for the compiler.
+    "allowJs": true,
     "outDir": "dist",
     "types": ["node"]
   },

@@ -70,7 +70,7 @@
     <h1>Support</h1>
     <p class="lede">Speak to our support assistant about payments, invoices, payouts or your account.</p>
 
-    <div class="status"><span class="dot" id="dot"></span><span id="status">Ready when you are</span></div>
+    <div class="status"><span class="dot" id="dot"></span><span id="status"></span></div>
 
     <button id="start">Start call</button>
     <button id="end" class="secondary" hidden>End call</button>
@@ -83,6 +83,7 @@
 
 <script type="module">
 import Vapi from "https://esm.sh/@vapi-ai/web@2";
+import { initialState, reduce, view, END_TIMEOUT_MS } from "./call-state.js";
 
 const el = (id) => document.getElementById(id);
 const startBtn = el("start");
@@ -91,17 +92,63 @@ const reason = el("reason");
 const transcript = el("transcript");
 const hint = el("hint");
 
-/** Every state shown here comes from a real call event. Nothing is guessed, and the page
-    never keeps claiming the call is live once it is not. */
-function setState(text, tone) {
-  el("status").textContent = text;
-  el("dot").className = tone ? "dot " + tone : "dot";
+let state = initialState();
+let vapi = null;
+let config = null;
+let endTimer = null;
+
+/**
+ * The page holds no state of its own. Every event goes through the machine in call-state.js,
+ * and the DOM is re-rendered from the result, so the screen cannot drift into a state the
+ * machine was never put in.
+ */
+function dispatch(event) {
+  const step = reduce(state, event);
+  state = step.state;
+  for (const effect of step.effects) perform(effect);
+  render();
 }
 
-function showReason(text, isError) {
-  reason.textContent = text || "";
-  reason.className = isError ? "reason error" : "reason";
-  reason.hidden = !text;
+function perform(effect) {
+  if (effect === "stop-call") {
+    // The call is not known to be over just because an error was reported, so stop it
+    // explicitly. Any "call-end" this provokes is ignored by the machine, which has moved on.
+    try {
+      if (vapi) vapi.stop();
+    } catch {
+      // Already closed. The machine has recorded the outcome either way.
+    }
+    return;
+  }
+  if (effect === "arm-end-timer") {
+    clearTimeout(endTimer);
+    endTimer = setTimeout(() => dispatch({ type: "end-timeout" }), END_TIMEOUT_MS);
+    return;
+  }
+  if (effect === "cancel-end-timer") {
+    clearTimeout(endTimer);
+    endTimer = null;
+  }
+}
+
+function render() {
+  const v = view(state);
+
+  el("status").textContent = v.status;
+  el("dot").className = v.tone ? "dot " + v.tone : "dot";
+
+  startBtn.hidden = !v.start.visible;
+  startBtn.disabled = !v.start.enabled;
+  startBtn.textContent = v.start.label;
+
+  endBtn.hidden = !v.end.visible;
+  endBtn.disabled = !v.end.enabled;
+
+  reason.textContent = v.reason;
+  reason.className = v.reasonTone === "warn" ? "reason" : "reason error";
+  reason.hidden = !v.reason;
+
+  hint.hidden = !v.hintVisible;
 }
 
 function addLine(who, text) {
@@ -117,10 +164,6 @@ function addLine(who, text) {
   transcript.append(row);
   transcript.scrollTop = transcript.scrollHeight;
 }
-
-let vapi = null;
-let config = null;
-let live = false;
 
 async function loadConfig() {
   const res = await fetch("/config");
@@ -147,85 +190,63 @@ async function checkMicrophone() {
   }
 }
 
-function resetToIdle(label, state, tone, detail) {
-  live = false;
-  endBtn.hidden = true;
-  endBtn.disabled = false;
-  startBtn.hidden = false;
-  startBtn.disabled = false;
-  startBtn.textContent = label;
-  setState(state, tone);
-  showReason(detail, tone === "error");
+function attach(instance) {
+  instance.on("call-start", () => dispatch({ type: "call-started" }));
+  instance.on("speech-start", () => dispatch({ type: "speech-started" }));
+  instance.on("speech-end", () => dispatch({ type: "speech-ended" }));
+  instance.on("call-end", () => dispatch({ type: "call-ended" }));
+  instance.on("error", (err) => {
+    const message = err && typeof err.errorMsg === "string" ? err.errorMsg : "The call could not continue.";
+    dispatch({ type: "error", message });
+  });
+  instance.on("message", (msg) => {
+    const isFinal = msg && msg.type === "transcript" && msg.transcriptType === "final";
+    if (isFinal && typeof msg.transcript === "string" && msg.transcript.trim()) {
+      addLine(msg.role === "assistant" ? "Assistant" : "You", msg.transcript.trim());
+    }
+  });
 }
 
-(async function init() {
-  startBtn.disabled = true;
-  setState("Checking your microphone");
-  try {
-    config = await loadConfig();
-  } catch (err) {
-    setState("Unavailable", "error");
-    showReason(err.message, true);
-    return;
-  }
-  const problem = await checkMicrophone();
-  if (problem) {
-    setState("Microphone unavailable", "warn");
-    showReason(problem, false);
-    return;
-  }
-  startBtn.disabled = false;
-  setState("Ready when you are");
-})();
-
 startBtn.addEventListener("click", async () => {
-  startBtn.disabled = true; // disabled on click, so a double click cannot open two calls
-  startBtn.textContent = "Connecting";
-  setState("Connecting");
-  showReason("");
+  const before = state;
+  dispatch({ type: "start-clicked" });
+  // The machine refuses a start whenever a call may still be running, which is what stops a
+  // click on the error screen from stacking a second call on top of the first.
+  if (state === before) return;
 
   try {
-    vapi = new Vapi(config.publicKey);
-
-    vapi.on("call-start", () => {
-      live = true;
-      startBtn.hidden = true;
-      endBtn.hidden = false;
-      hint.hidden = true;
-      setState("Listening", "live");
-    });
-    vapi.on("speech-start", () => { if (live) setState("Assistant speaking", "live"); });
-    vapi.on("speech-end", () => { if (live) setState("Listening", "live"); });
-    vapi.on("message", (msg) => {
-      const isFinal = msg && msg.type === "transcript" && msg.transcriptType === "final";
-      if (isFinal && typeof msg.transcript === "string" && msg.transcript.trim()) {
-        addLine(msg.role === "assistant" ? "Assistant" : "You", msg.transcript.trim());
-      }
-    });
-    vapi.on("call-end", () => resetToIdle("Start another call", "Call ended", null, ""));
-    vapi.on("error", (err) => {
-      const detail = err && typeof err.errorMsg === "string" ? err.errorMsg : "The call could not continue.";
-      resetToIdle("Try again", "Connection lost", "error", detail);
-    });
-
+    if (!vapi) {
+      vapi = new Vapi(config.publicKey);
+      attach(vapi);
+    }
     await vapi.start(config.assistantId);
   } catch (err) {
-    const detail = err && err.message ? err.message : "Something went wrong starting the call.";
-    resetToIdle("Try again", "Could not start the call", "error", detail);
+    dispatch({ type: "start-failed", message: err && err.message ? err.message : "Something went wrong starting the call." });
   }
 });
 
 endBtn.addEventListener("click", () => {
-  endBtn.disabled = true;
-  setState("Ending");
+  dispatch({ type: "end-clicked" });
+  // Asking to stop is separate from deciding the call is over. If the acknowledgement never
+  // arrives, the timer armed above resets the page rather than leaving it on "Ending".
   try {
     if (vapi) vapi.stop();
   } catch {
-    // The call-end handler normally resets the page; if stop throws, reset here so the
-    // page is never left showing "Ending" forever.
-    resetToIdle("Start another call", "Call ended", null, "");
+    dispatch({ type: "call-ended" });
   }
 });
+
+(async function init() {
+  render();
+  try {
+    config = await loadConfig();
+  } catch (err) {
+    dispatch({ type: "config-failed", message: err.message });
+    return;
+  }
+  const problem = await checkMicrophone();
+  dispatch(problem ? { type: "mic-blocked", message: problem } : { type: "ready" });
+})();
 </script>
 </body>
 </html>
