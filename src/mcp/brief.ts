@@ -14,6 +14,8 @@ export interface BriefInput {
   unresolvedCount: number;
   turns: BriefTurn[];
   toolCalls: BriefToolCall[];
+  /** What the caller said identifies their case. Null when they had nothing to give. */
+  caseReference?: string | null;
 }
 
 const HANDLED: Record<string, string> = {
@@ -59,6 +61,10 @@ export function buildHandoffBrief(input: BriefInput): string {
     }
   }
 
+  // Near the top of what a human reads, because it is the first thing they act on. Stated as
+  // "none given" rather than omitted: a support agent should be able to tell the difference
+  // between a caller who had no reference and a brief that forgot to record one.
+  lines.push(`Case reference: ${input.caseReference ? clip(oneLine(input.caseReference), 64) : "none given"}`);
   lines.push(`Unresolved questions: ${input.unresolvedCount}`);
   lines.push(`Reason for escalating: ${clip(oneLine(input.reason), 200)}`);
   return lines.join("\n");

@@ -3,6 +3,7 @@ import { fileURLToPath } from "node:url";
 import express, { type NextFunction, type Request, type Response } from "express";
 import { getDb, requireEnv } from "../shared/db.js";
 import { agentAuthToken, mcpAuthToken } from "./config.js";
+import { dispatchHandoffEmails } from "./handoff-email.js";
 import { endConversation, handleTurn, NotFoundError } from "./respond.js";
 import { createConversation } from "./store.js";
 import { sweepStaleConversations } from "./sweep.js";
@@ -163,6 +164,15 @@ const sweepTimer = setInterval(() => {
   void sweepStaleConversations().catch((err) => console.error("sweep failed:", err instanceof Error ? err.message : err));
 }, 5 * 60_000);
 sweepTimer.unref();
+
+// Separate from the conversation sweep and far more frequent: the caller has been told a
+// representative will follow up, and every minute the brief sits undelivered is a minute that
+// promise is not yet true. Runs once at startup so a restart flushes anything left behind.
+const emailFailed = (err: unknown) =>
+  console.error("handoff email sweep failed:", err instanceof Error ? err.message : err);
+const emailTimer = setInterval(() => void dispatchHandoffEmails().catch(emailFailed), 60_000);
+emailTimer.unref();
+void dispatchHandoffEmails().catch(emailFailed);
 
 // A malformed body must never return Express's default page, which can carry a stack trace.
 app.use((_err: unknown, _req: Request, res: Response, _next: NextFunction) => {

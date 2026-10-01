@@ -48,7 +48,7 @@ async function openConversation(db: SupabaseClient, id: string): Promise<Convers
   return data as ConversationRow;
 }
 
-async function loadBrief(db: SupabaseClient, conversationId: string, reason: string): Promise<string> {
+async function loadBrief(db: SupabaseClient, conversationId: string, reason: string, caseReference: string | null): Promise<string> {
   const [turns, calls, conv] = await Promise.all([
     db.from("conversation_turns").select("user_transcript,answer_type").eq("conversation_id", conversationId).order("created_at", { ascending: true }),
     db.from("tool_calls").select("tool_name,status,result_summary").eq("conversation_id", conversationId).order("created_at", { ascending: true }),
@@ -60,6 +60,7 @@ async function loadBrief(db: SupabaseClient, conversationId: string, reason: str
     unresolvedCount: (conv.data?.unresolved_count as number | undefined) ?? 0,
     turns: (turns.data ?? []) as BriefTurn[],
     toolCalls: (calls.data ?? []) as BriefToolCall[],
+    caseReference,
   });
 }
 
@@ -104,7 +105,9 @@ async function createTicketRecord(
       priority: await effectivePriority(db, conv.linked_customer_id, p.priority),
       summary: p.summary,
       summary_hash: hash,
-      handoff_brief: await loadBrief(db, conv.id, p.summary),
+      // Null deliberately: a ticket collects no separate reference field. Where the caller gave
+      // one it is already inside the summary, which the brief prints as the reason line.
+      handoff_brief: await loadBrief(db, conv.id, p.summary, null),
     })
     .select("id,status")
     .single();
@@ -171,6 +174,7 @@ interface EscalationArgs {
   category: (typeof ESCALATION_CATEGORIES)[number];
   reason: string;
   preferred_time?: string;
+  case_reference?: string;
 }
 
 async function runEscalation(db: SupabaseClient, conversationId: string, args: EscalationArgs): Promise<ToolOutcome> {
@@ -192,6 +196,9 @@ async function runEscalation(db: SupabaseClient, conversationId: string, args: E
   }
 
   const reason = clean(args.reason, 500);
+  // Absent and blank are the same thing here: the caller had nothing to give, and the brief
+  // says so explicitly rather than leaving a support agent to wonder.
+  const caseReference = args.case_reference ? clean(args.case_reference, 64) || null : null;
   // Claim first: the unique index decides the winner before anything else is created,
   // so a race can never leave two escalations or an orphaned ticket behind.
   const { data, error } = await db
@@ -205,7 +212,8 @@ async function runEscalation(db: SupabaseClient, conversationId: string, args: E
       reason,
       call_booked: false,
       preferred_time: args.preferred_time ? clean(args.preferred_time, 200) : null,
-      handoff_summary: await loadBrief(db, conv.id, reason),
+      case_reference: caseReference,
+      handoff_summary: await loadBrief(db, conv.id, reason, caseReference),
       // Test conversations never send real email; the composed content stays checkable.
       handoff_email_status: conv.is_test ? "suppressed" : "pending",
     })
@@ -276,6 +284,13 @@ export function registerActionTools(server: McpServer, db: SupabaseClient, ctx: 
         category: z.enum(ESCALATION_CATEGORIES),
         reason: z.string().min(5).max(500).describe("One factual line on why a human is needed."),
         preferred_time: z.string().max(200).optional().describe("The caller's own words. Stored, never confirmed."),
+        case_reference: z
+          .string()
+          .max(64)
+          .optional()
+          .describe(
+            "What the caller said identifies their case: a transaction, payout or invoice reference, exactly as they gave it. Omit it if they do not have one — never invent or guess a reference.",
+          ),
       },
     },
     async (args) =>

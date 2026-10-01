@@ -42,6 +42,12 @@ export const STATE_YOUR_PROBLEM =
   "Thanks. So I can help, could you tell me what you need — a payment, an invoice, a payout or an account question?";
 export const NO_PROGRESS_CLOSE =
   "It sounds like now isn't a good time. Do call back whenever you're ready, or use the support options in your RelayPay dashboard.";
+/**
+ * Said when the caller signals they are finished. CALL_END_MARKER is appended by the Vapi route,
+ * so this line is what ends a call that went well — previously nothing did, and a resolved call
+ * stayed open on a metered line until the caller hung up or Vapi timed it out.
+ */
+export const RESOLVED_CLOSE = "Happy to help. Thanks for calling RelayPay.";
 /** Spoken when the tool server is unreachable and the server has written the ticket itself. */
 export const TOOLS_DOWN_FALLBACK =
   "I'm sorry, I can't reach our systems at the moment, so I can't look that up. I've logged this for the support team and someone will follow up.";

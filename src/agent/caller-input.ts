@@ -32,6 +32,59 @@ export function classifyInput(text: string): { kind: InputKind } {
   return { kind: "ok" };
 }
 
+/**
+ * Apostrophes are dropped rather than turned into spaces, so "that's" reads as one word, "thats".
+ * The shared `normalise` above replaces them with a space, which would split every contraction
+ * the patterns below depend on.
+ */
+const normaliseClosing = (text: string): string =>
+  text
+    .toLowerCase()
+    .replace(/['‘’`]/g, "")
+    .replace(/[^\p{L}\p{N}\s]+/gu, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+
+/** Sign-offs that mean the call is over whatever was asked before them. */
+const FAREWELL = /\b(goodbye|good bye|bye|have a (good|nice|lovely) (day|one|evening|afternoon)|we?re (all )?done|im (all )?done|that will be all|thatll be all)\b/;
+
+/** "We are finished" — but only when the caller is not still answering a question. */
+const NOTHING_FURTHER = /\b(thats (all|it|everything)|nothing (else|further|more)|not anything else)\b/;
+
+/**
+ * The same words appear when the caller is supplying information — "that's all I know", "that's
+ * all the detail I have" — and ending the call on those would cut them off mid-answer.
+ */
+const STILL_ANSWERING = /\b(i|we) (know|knew|remember|have|had|got|can|could|think|believe|recall|said)\b/;
+
+/** Only a closing in reply to a wrap-up question; otherwise "no" is an answer, not a sign-off. */
+const BARE_ACK = /^(no|nope|nah|no thanks|no thank you|all good|im good|im all set|thats fine|were fine)$/;
+
+const WRAP_UP_QUESTION = /\b(anything|something) else\b|help you with anything|anything further/;
+
+/** A sign-off is short. A long sentence containing "that's all" is usually still making a point. */
+const MAX_CLOSING_WORDS = 10;
+
+/**
+ * Whether the caller has said the conversation is over.
+ *
+ * Deliberately conservative: ending a call that was not finished is far worse than leaving one
+ * running a few seconds longer, so an ambiguous utterance is left to the model. `lastAssistant`
+ * supplies the context that makes a bare "no" readable — it closes the call after "anything else?"
+ * and means nothing after "is that the right transaction?".
+ */
+export function isClosing(text: string, lastAssistant?: string | null): boolean {
+  const t = normaliseClosing(text);
+  if (!t) return false;
+  // A question is the opposite of a sign-off, whatever else it contains.
+  if (text.includes("?")) return false;
+  if (t.split(" ").length > MAX_CLOSING_WORDS) return false;
+
+  if (FAREWELL.test(t)) return true;
+  if (NOTHING_FURTHER.test(t) && !STILL_ANSWERING.test(t)) return true;
+  return BARE_ACK.test(t) && !!lastAssistant && WRAP_UP_QUESTION.test(normaliseClosing(lastAssistant));
+}
+
 // Confirmations, greetings and sign-offs repeat constantly and ask nothing. Repeated greetings are
 // handled separately by the no-progress limit, not treated as an unanswered question.
 const NON_QUESTION = new Set([

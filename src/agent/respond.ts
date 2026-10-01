@@ -4,10 +4,10 @@ import { getDb } from "../shared/db.js";
 import { config } from "./config.js";
 import { extractFacts } from "./facts.js";
 import {
-  checkReply, DIDNT_CATCH, RECOVERY_LIMIT, rephraseLine, ERROR_FALLBACK, ERROR_FALLBACK_UNLOGGED, ESCALATED_FALLBACK, NO_PROGRESS_CLOSE,
+  checkReply, DIDNT_CATCH, RECOVERY_LIMIT, rephraseLine, ERROR_FALLBACK, ERROR_FALLBACK_UNLOGGED, ESCALATED_FALLBACK, NO_PROGRESS_CLOSE, RESOLVED_CLOSE,
   OFF_TOPIC_LINE, SAFE_FALLBACK, STATE_YOUR_PROBLEM, STILL_DIDNT_CATCH, TOOLS_DOWN_FALLBACK,
 } from "./guard.js";
-import { classifyInput, isRepeatQuestion } from "./caller-input.js";
+import { classifyInput, isClosing, isRepeatQuestion } from "./caller-input.js";
 import { mcpHealthy } from "./mcp-health.js";
 import { buildNotes } from "./notes.js";
 import { callerMessage, escapeCaller, LOOKUP_FIRST_NOTE, mentionsReference, WORK_FIRST_NOTE } from "./prompt.js";
@@ -227,6 +227,23 @@ async function runTurn(p: TurnRequest): Promise<TurnResult> {
   // A run of turns the caller could not use: a mishearing, or a reply the guard had to replace.
   const failedRecoveries = countWhile(recent, (t) => t.guardTripped || t.answerType === "unintelligible");
   const lastQuestion = recent.find((t) => t.assistant?.includes("?"))?.assistant ?? null;
+  // A caller who says they are finished ends the call here, before any model call: it is the one
+  // turn whose answer does not depend on what was asked, and deciding it in code means a resolved
+  // call closes in milliseconds rather than holding a metered line open for a goodbye.
+  // Only once the call has gone somewhere — a greeting-only call is the no-progress case below —
+  // and never mid-escalation, where "no" answers a question about their details.
+  const progressed = recentTypes.some((t) => SUBSTANTIVE.has(t));
+  if (progressed && conv.status !== "collecting_details" && isClosing(p.text, lastQuestion)) {
+    return codeOwnedTurn(id, p.text, {
+      reply: RESOLVED_CLOSE,
+      answerType: "conversational",
+      note: "caller signalled the call was finished",
+      countsUnresolved: false,
+      ended: true,
+      started,
+    });
+  }
+
   const input = classifyInput(p.text);
   if (input.kind !== "ok") {
     const streak = failedRecoveries + 1;

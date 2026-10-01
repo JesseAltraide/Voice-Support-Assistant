@@ -92,10 +92,12 @@ npm run start:mcp     # port 3001
 npm run start:agent   # port 3002
 ```
 
-Open <http://localhost:3002> for the voice page, or talk to it as text:
+Open <http://localhost:3002> for the voice page, or talk to it as text. The reply carries a
+`conversation_id`; send it back as `conversation_id` to continue the same conversation, or
+omit it to start a new one:
 
 ```bash
-curl -s localhost:3002/chat -H "Authorization: Bearer $AGENT_AUTH_TOKEN" -H 'content-type: application/json' -d '{"conversationId":"demo-1","text":"my payout has not arrived"}'
+curl -s localhost:3002/chat -H "Authorization: Bearer $AGENT_AUTH_TOKEN" -H 'content-type: application/json' -d '{"message":"my payout has not arrived"}'
 ```
 
 ### Environment
