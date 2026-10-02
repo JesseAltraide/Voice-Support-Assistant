@@ -3,13 +3,22 @@ import { fileURLToPath } from "node:url";
 import express, { type NextFunction, type Request, type Response } from "express";
 import { describeSlot, SUPPORT_TIMEZONE } from "../mcp/callback-slots.js";
 import { draftPayload } from "./draft.js";
-import { hashToken, newSessionToken, SESSION_HOURS, sessionCookie, sessionExpiry, verifyPassword } from "./support-auth.js";
+import {
+  clearLoginAttempts,
+  hashToken,
+  loginAttemptAllowed,
+  newSessionToken,
+  SESSION_HOURS,
+  sessionCookie,
+  sessionExpiry,
+  verifyPassword,
+} from "./support-auth.js";
 import { getDb, requireEnv } from "../shared/db.js";
 import { agentAuthToken, mcpAuthToken } from "./config.js";
 import { dispatchHandoffEmails } from "./handoff-email.js";
 import { endConversation, handleTurn, NotFoundError } from "./respond.js";
 import { createConversation } from "./store.js";
-import { sweepStaleConversations } from "./sweep.js";
+import { sweepExpiredSessions, sweepStaleConversations } from "./sweep.js";
 import { vapiRouter } from "./vapi.js";
 
 /**
@@ -335,6 +344,14 @@ app.post("/admin/login", rateLimitPublic, express.json({ limit: "2kb" }), async 
   const reject = () => res.status(401).json({ error: "invalid_credentials" });
   if (!EMAIL_RE.test(email) || password.length === 0) return reject();
 
+  // Counted per address and per IP. A 429 is honest here where the 401 is deliberately vague:
+  // being told to wait reveals nothing about whether the account exists.
+  const keys = [`email:${email}`, `ip:${req.ip ?? "unknown"}`];
+  if (!loginAttemptAllowed(keys)) {
+    res.status(429).json({ error: "too_many_attempts" });
+    return;
+  }
+
   const db = getDb();
   const { data: user, error } = await db
     .from("support_users")
@@ -347,6 +364,7 @@ app.post("/admin/login", rateLimitPublic, express.json({ limit: "2kb" }), async 
   const ok = await verifyPassword(password, stored);
   if (error || !user || !ok) return reject();
 
+  clearLoginAttempts(keys);
   const { token, tokenHash } = newSessionToken();
   const inserted = await db
     .from("support_sessions")
@@ -517,6 +535,10 @@ app.post("/admin/sweep", requireAuth, async (_req, res) => {
 
 const sweepTimer = setInterval(() => {
   void sweepStaleConversations().catch((err) => console.error("sweep failed:", err instanceof Error ? err.message : err));
+  // Expired sessions are already refused on sight; this only stops dead digests piling up.
+  void sweepExpiredSessions().catch((err) =>
+    console.error("session sweep failed:", err instanceof Error ? err.message : err),
+  );
 }, 5 * 60_000);
 sweepTimer.unref();
 

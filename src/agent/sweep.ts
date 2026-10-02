@@ -18,6 +18,24 @@ export interface SweepResult {
   ticketed: number;
 }
 
+/**
+ * Removes support sessions whose time has passed.
+ *
+ * An expired session is already refused on sight, so this is housekeeping rather than a lock:
+ * the row is dead weight, and a table of dead session digests is a table worth stealing for no
+ * reason. The read path deliberately does not delete, because a check that writes turns every
+ * page load into a write.
+ */
+export async function sweepExpiredSessions(): Promise<number> {
+  const { data, error } = await getDb()
+    .from("support_sessions")
+    .delete()
+    .lt("expires_at", new Date().toISOString())
+    .select("id");
+  if (error) throw new Error(`sweep sessions: ${error.message}`);
+  return (data ?? []).length;
+}
+
 export async function sweepStaleConversations(staleAfterMs = STALE_AFTER_MS): Promise<SweepResult> {
   const db = getDb();
   const cutoff = new Date(Date.now() - staleAfterMs).toISOString();

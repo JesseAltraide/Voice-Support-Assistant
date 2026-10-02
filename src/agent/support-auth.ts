@@ -60,6 +60,51 @@ export const sessionExpiry = (now: Date = new Date()): string =>
   new Date(now.getTime() + SESSION_HOURS * 60 * 60_000).toISOString();
 
 /**
+ * How many sign-in attempts are allowed before the door shuts for a while.
+ *
+ * The general public limiter allows thirty requests a minute, which is right for a caller's
+ * browser and far too generous for a password field: it leaves tens of thousands of guesses a
+ * day against whatever password someone actually chose. This is counted per address AND per IP,
+ * so a weak password cannot be found by spreading guesses across addresses, and one person
+ * guessing from one machine cannot be hidden in the noise of a shared office IP.
+ */
+export const LOGIN_MAX_ATTEMPTS = 5;
+export const LOGIN_WINDOW_MS = 15 * 60_000;
+
+const attempts = new Map<string, { count: number; resetAt: number }>();
+
+/**
+ * Records a sign-in attempt and says whether it is allowed.
+ *
+ * Deliberately in memory: this server is a single process, and a limiter that needs a database
+ * round trip is a limiter that fails open when the database is the thing under load. A restart
+ * clears it, which is the known cost.
+ */
+export function loginAttemptAllowed(keys: string[], now = Date.now()): boolean {
+  let allowed = true;
+  for (const key of keys) {
+    const seen = attempts.get(key);
+    if (!seen || seen.resetAt <= now) {
+      attempts.set(key, { count: 1, resetAt: now + LOGIN_WINDOW_MS });
+      continue;
+    }
+    seen.count += 1;
+    if (seen.count > LOGIN_MAX_ATTEMPTS) allowed = false;
+  }
+  // Every key is counted before any refusal is returned, so a blocked address still accrues
+  // attempts rather than being let off while another key does the refusing.
+  if (attempts.size > 5000) {
+    for (const [k, v] of attempts) if (v.resetAt <= now) attempts.delete(k);
+  }
+  return allowed;
+}
+
+/** Called on success: a person who proves who they are should not stay locked out. */
+export function clearLoginAttempts(keys: string[]): void {
+  for (const key of keys) attempts.delete(key);
+}
+
+/**
  * The session token out of a Cookie header, or null.
  *
  * Written by hand rather than pulling in a cookie parser: one cookie is read, in one place, and
