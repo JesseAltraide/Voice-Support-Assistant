@@ -39,8 +39,12 @@ begin
   end if;
 
   if v_existing is not null then
+    -- escalation_id is included here too: a caller can book a callback before any escalation
+    -- exists, then log a case and reschedule, and the moved row must pick up that link rather
+    -- than keep the null it started with.
     update callback_bookings
-      set slot_start = p_slot_start, slot_end = p_slot_end, caller_timezone = p_caller_timezone
+      set slot_start = p_slot_start, slot_end = p_slot_end, caller_timezone = p_caller_timezone,
+          escalation_id = coalesce(p_escalation_id, escalation_id)
       where id = v_existing;
     return query select true, v_existing, true;
     return;

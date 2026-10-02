@@ -33,16 +33,32 @@ export function verifyCaller(
   candidates: CustomerCandidate[],
   typed: { email: string | null; name: string | null; company: string | null },
 ): VerifyResult {
-  let best: { id: string; score: number } | null = null;
+  let bestId: string | null = null;
+  let bestScore = 0;
+  let tiedAtBest = 0;
   for (const row of candidates) {
     const score =
       (typed.email !== null && row.contact_email === typed.email ? 1 : 0) +
       (typed.name !== null && namesAgree(row.contact_name, typed.name) ? 1 : 0) +
       (typed.company !== null && normaliseCompany(row.company_name) === normaliseCompany(typed.company) ? 1 : 0);
-    if (!best || score > best.score) best = { id: row.customer_id, score };
+    if (score === 0) continue;
+    if (score > bestScore) {
+      bestScore = score;
+      bestId = row.customer_id;
+      tiedAtBest = 1;
+    } else if (score === bestScore) {
+      tiedAtBest += 1;
+    }
   }
-  const score = best?.score ?? 0;
-  if (score >= 2) return { state: "verified", customerId: best!.id };
-  if (score === 1 && typed.company === null) return { state: "unconfirmed", customerId: null };
+  // A tie at the winning score means two different customers were equally well matched —
+  // sharing a company name, say, with a first name that tolerantly matches both. Picking
+  // whichever row the query happened to return first would link the call to a specific
+  // customer's records on the strength of an ambiguity, not an identification.
+  if (bestScore >= 2 && tiedAtBest === 1) return { state: "verified", customerId: bestId };
+  // A tie at score 1 is not the same risk: "unconfirmed" never attaches a customerId here, and
+  // the lookup_customer call that follows re-checks its own two-identifier agreement with its
+  // own uniqueness rule before anything links. Scoring the account the email actually matched
+  // is still meaningful even if an unrelated row happens to share the typed name by coincidence.
+  if (bestScore >= 1 && typed.company === null) return { state: "unconfirmed", customerId: null };
   return { state: "guest", customerId: null };
 }

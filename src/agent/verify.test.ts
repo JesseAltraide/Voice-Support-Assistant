@@ -88,3 +88,41 @@ describe("the best-matching account wins when candidates disagree", () => {
     expect(r).toEqual({ state: "verified", customerId: "CUS-1002" });
   });
 });
+
+describe("a tie at the winning score never picks a customer arbitrarily", () => {
+  // The scenario the security review found: two different customers share a company name, and
+  // a tolerant first-name match lands on both. Whichever row the database happened to return
+  // first must not become "the" verified account.
+  const TIED: CustomerCandidate[] = [
+    { customer_id: "CUS-A", contact_email: "chris.a@acme.example", contact_name: "Chris Adeyemi", company_name: "Acme Corp" },
+    { customer_id: "CUS-B", contact_email: "chris.b@acme.example", contact_name: "Chris Baptiste", company_name: "Acme Corp" },
+  ];
+
+  it("two customers tying at score 2 (name + company) never verifies either one", () => {
+    const r = verifyCaller(TIED, typed({ name: "Chris", company: "Acme Corp" }));
+    expect(r.state).not.toBe("verified");
+    expect(r.customerId).toBeNull();
+  });
+
+  it("the same tie is still a guest, not unconfirmed — company was already given and didn't disambiguate", () => {
+    const r = verifyCaller(TIED, typed({ name: "Chris", company: "Acme Corp" }));
+    expect(r.state).toBe("guest");
+  });
+
+  it("breaking the tie with a correct email resolves it normally", () => {
+    const r = verifyCaller(TIED, typed({ name: "Chris", company: "Acme Corp", email: "chris.b@acme.example" }));
+    expect(r).toEqual({ state: "verified", customerId: "CUS-B" });
+  });
+
+  it("a tie at score 1 does not falsely invite a company question pointed at one candidate", () => {
+    // Two different customers both happen to be named "Chris" at different companies; nothing
+    // else typed. Still ties at 1, and the eventual lookup_customer call enforces its own
+    // uniqueness check regardless, but this must not silently prefer one of them either.
+    const sameFirstName: CustomerCandidate[] = [
+      { customer_id: "CUS-A", contact_email: "a@one.example", contact_name: "Chris Adeyemi", company_name: "One Co" },
+      { customer_id: "CUS-B", contact_email: "b@two.example", contact_name: "Chris Baptiste", company_name: "Two Co" },
+    ];
+    const r = verifyCaller(sameFirstName, typed({ name: "Chris" }));
+    expect(r.customerId).toBeNull();
+  });
+});
