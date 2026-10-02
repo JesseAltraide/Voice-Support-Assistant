@@ -10,7 +10,7 @@ export interface NoteInput {
   elapsedMs: number;
   escalationExists: boolean;
   /** Given on the form before a web call. Absent on a phone call, which has no form. */
-  caller?: { name: string | null; email: string | null; timezone?: string | null };
+  caller?: { name: string | null; email: string | null; timezone?: string | null; isCustomer?: boolean };
   /** Injectable so the clock note can be asserted. Defaults to the real one. */
   now?: Date;
 }
@@ -45,6 +45,13 @@ export function buildNotes(i: NoteInput): NoteResult {
     // stored value directly, so the address is used correctly without being seen here.
     notes.push(
       `This caller is ${name}, and their email is already on file from the form they filled in. Do NOT ask for their name or their email, and do not say the email address: both are recorded and will be used for any escalation.`,
+    );
+    // The address they typed was matched against the customer list when the call connected, so
+    // the answer is already known and must not be asked for again by voice.
+    notes.push(
+      i.caller?.isCustomer === true
+        ? "That address matches an account on file, so this caller is verified. Look up their transactions and payouts directly when they give you a reference. Do NOT ask them to confirm a company name or an email first."
+        : "That address does not match any account on file, so this caller is a GUEST. Answer general questions about RelayPay's products, fees and timelines as usual. You cannot look anything up for them: do not call lookup_transaction, lookup_payout or lookup_customer, because there is no account to look in. If they ask about a specific transaction, payout or their account, say plainly that you cannot see account details for the address they gave, and offer to put them in front of a specialist who can check it properly.",
     );
   }
   // A model has no clock, and a caller booking a callback says "Tuesday at ten", not an instant.

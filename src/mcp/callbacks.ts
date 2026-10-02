@@ -5,6 +5,7 @@ import {
   bookableSlots, describeSlot, REFUSAL_REASON, slotRefusal,
   SLOT_CAPACITY, SLOT_MINUTES, SUPPORT_TIMEZONE,
 } from "./callback-slots.js";
+import { sendCallerEmail } from "../agent/handoff-email.js";
 import type { ToolContext } from "./context.js";
 import { runTool } from "./instrument.js";
 
@@ -14,17 +15,67 @@ const MAX_ALTERNATIVES = 3;
 interface ConversationContext {
   id: string;
   caller_timezone: string | null;
+  caller_name: string | null;
+  caller_email: string | null;
+}
+
+/**
+ * Tell the caller in writing what was agreed out loud.
+ *
+ * The booking stands whether or not this arrives — the row is written and support can see it. So
+ * a failure is recorded against the booking and never thrown: somebody who has just been given a
+ * time should not be told something went wrong because a mail server was slow.
+ */
+async function confirmByEmail(db: SupabaseClient, bookingId: string, conv: ConversationContext, slot: Date): Promise<void> {
+  if (!conv.caller_email) {
+    await db.from("callback_bookings").update({ confirmation_email_status: "skipped" }).eq("id", bookingId);
+    return;
+  }
+  const when = describeSlot(slot, conv.caller_timezone);
+  try {
+    await sendCallerEmail({
+      to: conv.caller_email,
+      subject: `Your RelayPay callback: ${when}`,
+      text: [
+        conv.caller_name ? `Hello ${conv.caller_name},` : "Hello,",
+        "",
+        `We have booked a callback for you on ${when}${conv.caller_timezone ? "" : ` (${SUPPORT_TIMEZONE} time)`}.`,
+        "",
+        "A member of the RelayPay support team will call you then. If that time no longer suits,",
+        "reply to this email and we will rearrange it.",
+        "",
+        "RelayPay Support",
+      ].join("\n"),
+    });
+    await db
+      .from("callback_bookings")
+      .update({ confirmation_email_status: "sent", confirmation_email_sent_at: new Date().toISOString() })
+      .eq("id", bookingId);
+  } catch (err) {
+    await db
+      .from("callback_bookings")
+      .update({
+        confirmation_email_status: "failed",
+        confirmation_email_error: (err instanceof Error ? err.message : String(err)).slice(0, 300),
+      })
+      .eq("id", bookingId);
+  }
 }
 
 async function conversationContext(db: SupabaseClient, conversationId: string): Promise<ConversationContext> {
   const { data, error } = await db
     .from("conversations")
-    .select("id,caller_timezone")
+    .select("id,caller_timezone,caller_name,caller_email")
     .eq("id", conversationId)
     .maybeSingle();
   if (error) throw new Error(error.message);
   if (!data) throw new Error("conversation not found");
-  return { id: data.id as string, caller_timezone: (data.caller_timezone as string | null) ?? null };
+  return {
+    id: data.id as string,
+    caller_timezone: (data.caller_timezone as string | null) ?? null,
+    caller_name: (data.caller_name as string | null) ?? null,
+    caller_email: (data.caller_email as string | null) ?? null,
+  };
 }
 
 /** How many callbacks are already taken at that instant. */
@@ -163,23 +214,37 @@ export function registerCallbackTools(server: McpServer, db: SupabaseClient, ctx
           .maybeSingle();
         if (existing.error) throw new Error(existing.error.message);
 
+        let bookingId: string;
         if (existing.data) {
+          bookingId = existing.data.id as string;
+          // A moved booking is confirmed again, because the time in the old email is now wrong.
           const { error } = await db
             .from("callback_bookings")
+            // Only the time. The confirmation columns are rewritten by confirmByEmail, which
+            // tolerates their absence — so a booking never depends on a migration having run.
             .update({ slot_start: slot.toISOString(), slot_end: slotEnd, caller_timezone: conv.caller_timezone })
-            .eq("id", existing.data.id as string);
+            .eq("id", bookingId);
           if (error) throw new Error(error.message);
         } else {
-          const { error } = await db.from("callback_bookings").insert({
-            conversation_id: conv.id,
-            escalation_id: args.escalation_id && /^[0-9a-f-]{32,40}$/i.test(args.escalation_id) ? args.escalation_id : null,
-            slot_start: slot.toISOString(),
-            slot_end: slotEnd,
-            caller_timezone: conv.caller_timezone,
-            status: "booked",
-          });
-          if (error) throw new Error(error.message);
+          const { data, error } = await db
+            .from("callback_bookings")
+            .insert({
+              conversation_id: conv.id,
+              escalation_id: args.escalation_id && /^[0-9a-f-]{32,40}$/i.test(args.escalation_id) ? args.escalation_id : null,
+              slot_start: slot.toISOString(),
+              slot_end: slotEnd,
+              caller_timezone: conv.caller_timezone,
+              status: "booked",
+            })
+            .select("id")
+            .single();
+          if (error || !data) throw new Error(error?.message ?? "booking not written");
+          bookingId = data.id as string;
         }
+
+        // Awaited, so the outcome is recorded before the agent speaks — but it can only mark the
+        // row, never fail the booking.
+        await confirmByEmail(db, bookingId, conv, slot);
 
         return {
           result: {

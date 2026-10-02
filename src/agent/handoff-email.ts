@@ -175,6 +175,19 @@ async function sendOverSmtp(mail: HandoffEmail): Promise<void> {
 }
 
 /**
+ * Send a message to a caller, over the same connection support's own briefs use.
+ *
+ * Kept apart from the handoff dispatcher because the rules differ: a handoff is held until the
+ * caller confirms their address on screen, whereas a booking confirmation goes to an address
+ * already on file and is wanted at once. It throws, so the caller of this decides what a failure
+ * means — here, a booking that stands with a confirmation that did not arrive.
+ */
+export async function sendCallerEmail(mail: { to: string; subject: string; text: string }): Promise<void> {
+  if (!EMAIL.test(mail.to)) throw new Error("not a valid email address");
+  await sendOverSmtp(mail);
+}
+
+/**
  * The message a support agent opens. Everything in it comes from the escalation record, so it
  * cannot describe the call differently from the way the call was logged.
  */

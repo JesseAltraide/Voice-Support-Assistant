@@ -136,6 +136,24 @@ function rateLimitPublic(req: Request, res: Response, next: NextFunction): void 
  * Neither route reveals anything about a conversation that has no escalation, and the only
  * fields they return are the ones the caller gave us in the first place.
  */
+/**
+ * The customer that owns a typed email address, if any.
+ *
+ * Returns the column to set rather than the id, so a caller who is not on file leaves
+ * linked_customer_id untouched — a guest, with no account records to reach. Matching is on the
+ * address alone because the caller typed it; an address said aloud would not be proof of
+ * anything, which is why lookup_customer still needs two identifiers.
+ */
+async function customerForEmail(db: ReturnType<typeof getDb>, email: string): Promise<Record<string, string>> {
+  const { data, error } = await db
+    .from("customers")
+    .select("customer_id")
+    .ilike("contact_email", email)
+    .maybeSingle();
+  if (error || !data) return {};
+  return { linked_customer_id: data.customer_id as string };
+}
+
 /** The conversation a Vapi call id belongs to, or null. Shared by everything keyed on a call. */
 const conversationForCall = async (callId: unknown) => {
   if (typeof callId !== "string" || !/^[0-9a-f-]{32,40}$/i.test(callId)) return null;
@@ -218,6 +236,11 @@ app.post("/call/details", rateLimitPublic, express.json({ limit: "4kb" }), async
         caller_timezone: timezone,
         caller_company: company,
         caller_city: city,
+        // The address they typed is checked against the customer list here, once, instead of
+        // being asked for again by voice. A match means their own records are theirs to see; no
+        // match means a guest, who gets general help and no account data at all. A spoken email
+        // is a mishearing waiting to happen, and this one was typed.
+        ...(await customerForEmail(db, email)),
       })
       .eq("vapi_call_id", body.call_id)
       .select("id");

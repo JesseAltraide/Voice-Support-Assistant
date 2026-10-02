@@ -113,3 +113,40 @@ describe("the clock note", () => {
     expect(clockFor({ now: NOW })).toMatch(/ISO-8601 UTC instant/);
   });
 });
+
+// The address typed on the form is checked against the customer list when the call connects, so
+// the agent is told who it is talking to instead of asking again by voice.
+describe("customer or guest", () => {
+  const forCaller = (isCustomer: boolean) =>
+    buildNotes({
+      ...healthy,
+      caller: { name: "Amara", email: "amara@lagosledger.example", timezone: "Africa/Lagos", isCustomer },
+    }).notes.join(" ");
+
+  it("a matched caller is told to look things up without asking again", () => {
+    const n = forCaller(true);
+    expect(n).toMatch(/verified/i);
+    expect(n).toMatch(/do not ask/i);
+  });
+
+  it("an unmatched caller is a guest, with no account tools", () => {
+    const n = forCaller(false);
+    expect(n).toMatch(/guest/i);
+    expect(n).toMatch(/lookup_transaction/);
+    expect(n).toMatch(/cannot see account details/i);
+  });
+
+  it("the guest is still helped, not turned away", () => {
+    // A guest asking about fees or timelines gets the same answer anyone does. Only the records
+    // are closed to them, because there are none to open.
+    expect(forCaller(false)).toMatch(/general questions/i);
+  });
+
+  it("says nothing either way when no form was filled in", () => {
+    // A phone call has no form. Claiming guest status there would wrongly close the records of
+    // a customer who can still be matched by voice.
+    const n = buildNotes({ ...healthy }).notes.join(" ");
+    expect(n).not.toMatch(/guest/i);
+    expect(n).not.toMatch(/verified/i);
+  });
+});
