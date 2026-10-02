@@ -1,7 +1,12 @@
-export const MODEL_ANSWER_TYPES = ["answer_directly", "clarify", "escalate", "decline", "conversational", "off_topic"] as const;
+export const MODEL_ANSWER_TYPES = ["answer_directly", "clarify", "escalate", "decline", "conversational", "off_topic", "unclear"] as const;
 export type ModelAnswerType = (typeof MODEL_ANSWER_TYPES)[number];
-/** `error` and `unintelligible` are server verdicts: the model can never declare them itself. */
-export type AnswerType = ModelAnswerType | "error" | "unintelligible";
+/**
+ * `error` and `unintelligible` are server verdicts: the model can never declare them itself.
+ * It can declare `unclear` — whether it made out the words is a judgement only it can make —
+ * but that becomes the server's `unintelligible` and a fixed line, so the model still never
+ * authors what the caller hears.
+ */
+export type AnswerType = Exclude<ModelAnswerType, "unclear"> | "error" | "unintelligible";
 
 const TYPE_AT_START = /^\s*(?:TYPE\s*:\s*([A-Za-z_-]+)|<type>\s*([A-Za-z_-]+)\s*<\/type>)[ \t]*\n?/i;
 const TYPE_LINE_ANYWHERE = /^\s*TYPE\s*:.*$/gim;
@@ -51,6 +56,10 @@ export interface DerivedType {
 
 export function deriveAnswerType(declared: ModelAnswerType | null, facts: TurnFacts): DerivedType {
   if (facts.escalationCreated) return { type: "escalate" };
+  // A caller whose words did not come through gets asked again, whatever the model was about to
+  // say. This is not the same as off-topic: off-topic is a request we understood and do not
+  // serve, while this one may be exactly our business and simply did not survive the line.
+  if (declared === "unclear") return { type: "unintelligible", note: "model could not make out the request" };
   const grounded = facts.groundedSearch || facts.foundLookup;
   if (declared === "answer_directly") {
     return grounded

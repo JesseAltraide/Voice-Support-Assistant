@@ -71,7 +71,53 @@ function nextStepFor(status: string, unavailable: string[]): string {
   return "give_summary";
 }
 
-const CUSTOMER_MISS = { linked: false };
+const CUSTOMER_MISS = { linked: false, customer_id: null, company_name: null, support_summary: null };
+
+/**
+ * Whether the name the caller gave agrees with the one on the record.
+ *
+ * Callers introduce themselves by first name — "I'm Amara from LagosLedger" — so every part
+ * they give must appear in the recorded name, not the whole of it. "Amara" agrees with
+ * "Amara Okafor"; "Chidi" does not, and neither does "Amara Bello".
+ */
+function namesAgree(recorded: string, supplied: string): boolean {
+  // Two letters minimum, so an initial is not an identifier: "A from LagosLedger" would
+  // otherwise match any contact whose name begins with that letter.
+  const parts = (s: string) =>
+    s.toLowerCase().replace(/[^\p{L}\p{N}\s]+/gu, " ").split(/\s+/).filter((w) => w.length >= 2);
+  const onRecord = new Set(parts(recorded));
+  const given = parts(supplied);
+  return given.length > 0 && given.every((part) => onRecord.has(part));
+}
+
+/**
+ * Upper bound on the customer rows scanned when a company name is the only identifier. The
+ * comparison happens in code, so this caps the work rather than the correctness.
+ */
+const CUSTOMER_SCAN_LIMIT = 500;
+
+/** Account states that are safe to confirm as "nothing wrong here". Anything else is support's. */
+const SETTLED_ACCOUNT = "active";
+const SETTLED_KYC = "approved";
+
+/**
+ * The one line that may be read to the caller about their account.
+ *
+ * The brief asks for a summary of safe account information, not a refusal — but the escalation
+ * rules forbid explaining a restriction or a compliance decision. Both hold if a settled account
+ * is confirmed plainly and anything else is described only as needing a person, never named.
+ * A restriction or a pending review is the caller's business to be helped with, not to be read a
+ * status code about.
+ */
+function customerSummary(accountStatus: string, kycStatus: string): { support_summary: string; settled: boolean } {
+  const settled = accountStatus === SETTLED_ACCOUNT && kycStatus === SETTLED_KYC;
+  return {
+    support_summary: settled
+      ? "The account is open and verification is complete."
+      : "There is something on this account that a specialist needs to look at.",
+    settled,
+  };
+}
 const TXN_MISS = { transaction_id: null, type: null, status: null, support_summary: null, unavailable_fields: [] };
 const PAYOUT_MISS = { payout_id: null, status: null, support_summary: null, unavailable_fields: [] };
 
@@ -80,11 +126,15 @@ export function registerLookupTools(server: McpServer, db: SupabaseClient, ctx: 
     "lookup_customer",
     {
       description:
-        "Link this conversation to the caller's customer record so a ticket or escalation reaches the right account. Needs TWO agreeing identifiers (customer_id, email, company_name). Used for linking only: nothing about the account is returned and nothing may be said about it.",
+        "Find the caller's customer record and link this conversation to it, so a ticket or escalation reaches the right account. Give every identifier the caller has offered (customer_id, email, company_name); one is enough. Read support_summary aloud exactly as written and say nothing else about the account: plan, status, verification and support notes are never spoken.",
       inputSchema: {
         customer_id: z.string().max(MAX_REF).optional(),
         email: z.string().max(254).optional(),
         company_name: z.string().max(120).optional(),
+        // Beyond the tool spec's three fields, because the brief's own example of "enough
+        // identifying information" is a caller giving their name and their company. Without
+        // somewhere to put the name, that example only ever counted as one identifier.
+        contact_name: z.string().max(120).optional(),
       },
     },
     async (args) =>
@@ -94,24 +144,50 @@ export function registerLookupTools(server: McpServer, db: SupabaseClient, ctx: 
         const id = normalizeId(args.customer_id, "CUS");
         const email = args.email?.trim().toLowerCase() || null;
         const company = args.company_name?.trim() || null;
-        const provided = [id, email, company].filter(Boolean).length;
+        // An initial is not an identifier, so it does not count towards the two required either.
+        const suppliedName = args.contact_name?.trim() ?? "";
+        const contact = suppliedName.length >= 2 ? suppliedName : null;
+        const provided = [id, email, company, contact].filter(Boolean).length;
+        // Still two. One identifier would let anyone learn whether a company has an account by
+        // naming it, and "enough identifying information" is the condition the brief puts on
+        // this lookup. A caller's own name now counts towards it, which is what the brief's
+        // example supplies alongside the company.
         if (provided < 2) {
           return {
-            result: { ...CUSTOMER_MISS, found: false, next_step: "ask_for_a_second_identifier_such_as_company_name_and_email" },
+            result: { ...CUSTOMER_MISS, found: false, next_step: "ask_for_one_more_detail_such_as_the_email_on_the_account" },
             summary: `found=false identifiers=${provided}`,
           };
         }
 
-        // The company name is never put into a query: pattern characters in it (%, _ and
-        // PostgREST's *) would match many rows and stand in for the second identifier.
-        // Candidates come from exact matches on the other identifiers; the name is then
-        // compared in code with strict equality.
-        let query = db.from("customers").select("customer_id,company_name").limit(5);
+        // The company name is still never put into a query: pattern characters in it (%, _ and
+        // PostgREST's *) once matched every row. It is compared in code with strict equality
+        // instead. When it is the ONLY identifier there is nothing to filter on, so the
+        // candidate set is the customer list itself — small, and bounded — rather than an
+        // arbitrary first few rows that might not contain the caller at all.
+        const columns = "customer_id,company_name,contact_name,plan,account_status,kyc_status";
+        let query = db.from("customers").select(columns).limit(5);
         if (id) query = query.eq("customer_id", id);
         if (email) query = query.eq("contact_email", email);
-        const { data, error } = await query;
+        // Exact equality on the company, which an index can serve. `eq` is not a pattern match,
+        // so the characters that once made a company name match every row are literal here.
+        if (!id && !email && company) query = query.eq("company_name", company);
+        let { data, error } = await query;
         if (error) throw new Error(error.message);
-        const matches = (data ?? []).filter((r) => !company || normaliseCompany(r.company_name as string) === normaliseCompany(company));
+
+        // Only a company name that differs in case or spacing falls through to a scan, and only
+        // when nothing else could narrow the search. The comparison below is still the authority.
+        if ((data ?? []).length === 0 && !id && !email && company) {
+          const scan = await db.from("customers").select(columns).limit(CUSTOMER_SCAN_LIMIT);
+          if (scan.error) throw new Error(scan.error.message);
+          data = scan.data;
+        }
+        // Every supplied name must agree. A caller who gives the right company and the wrong
+        // person is a miss, not a match on the company alone.
+        const matches = (data ?? []).filter(
+          (r) =>
+            (!company || normaliseCompany(r.company_name as string) === normaliseCompany(company)) &&
+            (!contact || namesAgree(r.contact_name as string, contact)),
+        );
         const row = matches.length === 1 ? matches[0] : null;
         if (!row) return missOutcome(db, conversationId, CUSTOMER_MISS);
 
@@ -126,14 +202,24 @@ export function registerLookupTools(server: McpServer, db: SupabaseClient, ctx: 
           const { error: linkError } = await db.from("conversations").update({ linked_customer_id: row.customer_id }).eq("id", conversationId);
           if (linkError) throw new Error(linkError.message);
         }
-        // Nothing about the record leaves the tool: no id, no plan, no status, no routing hint.
+        // The tool spec defines these fields, so they are returned. What keeps them out of the
+        // caller's ear is support_summary: it is the only grounded sentence here, so it is the
+        // only thing the speech guard will let through. support_notes is support's own writing
+        // about the caller and is never returned at all.
+        const { support_summary, settled } = customerSummary(row.account_status as string, row.kyc_status as string);
         return {
           result: {
             found: true,
             linked: true,
-            note: "Nothing about this account may be said. Say account details cannot be shared by voice.",
+            customer_id: row.customer_id,
+            company_name: row.company_name,
+            plan: row.plan,
+            account_status: row.account_status,
+            kyc_status: row.kyc_status,
+            support_summary,
+            next_step: settled ? "read_support_summary_then_ask_what_they_need" : "read_support_summary_then_offer_specialist_followup",
           },
-          summary: "found=true linked",
+          summary: `found=true linked settled=${settled}`,
         };
       }),
   );

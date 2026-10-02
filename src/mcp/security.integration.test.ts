@@ -75,16 +75,21 @@ describe("the failed-lookup limit is enforced, not advisory", () => {
 });
 
 describe("lookups do not echo identifiers or account status", () => {
-  it("no customer_id from lookup_transaction; no id and no route from lookup_customer", async () => {
+  it("no customer_id from lookup_transaction, and no raw account state from lookup_customer", async () => {
     const client = await connect({ conversationId: await newConversation(), turnId: null });
     const txn = await call(client, "lookup_transaction", { transaction_id: "TXN-9003" });
     expect(txn.body.found).toBe(true);
     expect(txn.body.customer_id).toBeUndefined();
+
     const cust = await call(client, "lookup_customer", { company_name: "AccraStack", email: "efua@accrastack.example" });
     expect(cust.body.found).toBe(true);
-    expect(cust.body.customer_id).toBeUndefined();
-    expect(cust.body.route).toBeUndefined();
-    expect(cust.text).not.toMatch(/specialist|restricted|CUS-/i);
+    // The tool spec defines customer_id, so it is returned; it is an internal identifier the
+    // speech guard keeps unspoken, not a secret the tool has to withhold.
+    expect(cust.body.customer_id).toBe("CUS-1003");
+    // What must never appear is the account's raw state, or support's notes about the caller.
+    // support_summary may say a specialist is needed; it may not say why.
+    expect(cust.body.support_notes).toBeUndefined();
+    expect(cust.body.support_summary as string).not.toMatch(/restricted|review required|pending|approved|growth|starter|scale/i);
   });
 
   it("a second lookup for a different customer does not silently relink the conversation", async () => {

@@ -4,7 +4,7 @@ import { getDb } from "../shared/db.js";
 import { config } from "./config.js";
 import { extractFacts } from "./facts.js";
 import {
-  checkReply, DIDNT_CATCH, RECOVERY_LIMIT, rephraseLine, ERROR_FALLBACK, ERROR_FALLBACK_UNLOGGED, ESCALATED_FALLBACK, NO_PROGRESS_CLOSE, RESOLVED_CLOSE,
+  checkReply, DIDNT_CATCH, RECOVERY_LIMIT, UNCLEAR_LIMIT, rephraseLine, ERROR_FALLBACK, ERROR_FALLBACK_UNLOGGED, ESCALATED_FALLBACK, NO_PROGRESS_CLOSE, RESOLVED_CLOSE,
   OFF_TOPIC_LINE, SAFE_FALLBACK, STATE_YOUR_PROBLEM, STILL_DIDNT_CATCH, TOOLS_DOWN_FALLBACK,
 } from "./guard.js";
 import { classifyInput, isClosing, isRepeatQuestion } from "./caller-input.js";
@@ -246,12 +246,16 @@ async function runTurn(p: TurnRequest): Promise<TurnResult> {
 
   const input = classifyInput(p.text);
   if (input.kind !== "ok") {
-    const streak = failedRecoveries + 1;
+    // The same limit as the model's own "I could not make that out", because to the caller
+    // these are one experience: they said something and were asked to say it again. Counting
+    // only the turns we failed to hear keeps a guard trip — which is the agent failing, not
+    // the caller — on its own separate budget.
+    const streak = countTrailing(recentTypes, "unintelligible") + 1;
     return codeOwnedTurn(id, p.text, {
-      reply: streak >= RECOVERY_LIMIT ? STILL_DIDNT_CATCH : rephraseLine(lastQuestion),
+      reply: streak >= UNCLEAR_LIMIT ? STILL_DIDNT_CATCH : rephraseLine(lastQuestion),
       answerType: "unintelligible",
       note: `caller input was ${input.kind}; consecutive ${streak}`,
-      countsUnresolved: streak >= RECOVERY_LIMIT,
+      countsUnresolved: streak >= UNCLEAR_LIMIT,
       started,
     });
   }
@@ -332,7 +336,13 @@ async function runTurn(p: TurnRequest): Promise<TurnResult> {
   }
   // A fixed, code-owned line is spoken as-is: there is nothing for the guard to police, and the
   // caller hears the same safe wording every time.
-  const codeOwned = derived.type === "off_topic" ? OFF_TOPIC_LINE : null;
+  // A caller the model could not make out is asked to say it again, up to UNCLEAR_LIMIT times,
+  // and then offered a person rather than a third request. The streak counts only consecutive
+  // turns we failed to hear, so a caller who was understood in between starts over.
+  const unclearBefore = countTrailing(recentTypes, "unintelligible");
+  const unclearLine =
+    derived.type === "unintelligible" ? (unclearBefore + 1 >= UNCLEAR_LIMIT ? STILL_DIDNT_CATCH : DIDNT_CATCH) : null;
+  const codeOwned = derived.type === "off_topic" ? OFF_TOPIC_LINE : unclearLine;
   const guard = codeOwned
     ? { ok: true, reasons: [] as string[] }
     : checkReply({ reply: parsed.text, callerTexts: callerAll, groundedTexts, forbiddenNames: names, records });
@@ -396,6 +406,9 @@ async function runTurn(p: TurnRequest): Promise<TurnResult> {
   const increment = Math.max(
     unresolvedIncrement(answerType, facts, clarifyAfter, { guardTripped: !guard.ok, repeatQuestion }),
     derived.downgraded ? 1 : 0,
+    // A caller we gave up on hearing had a question we never answered. Counting it keeps the
+    // conversation summary honest; counting every attempt would charge them for a bad line.
+    answerType === "unintelligible" && unclearBefore + 1 >= UNCLEAR_LIMIT ? 1 : 0,
   );
   const collecting = answerType === "escalate" && !facts.escalationCreated && !escalated;
   const wasCollecting = conv.status === "collecting_details";

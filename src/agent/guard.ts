@@ -34,6 +34,13 @@ export function rephraseLine(lastQuestion: string | null): string {
   return lastQuestion ? `${opener} ${lastQuestion}` : `${opener} Could you say that again?`;
 }
 
+/**
+ * How many times the caller is asked to repeat themselves before a person is offered instead.
+ * Two: a line that drops one word is worth a second go, and a caller asked three times has
+ * learned that saying it again does not work.
+ */
+export const UNCLEAR_LIMIT = 2;
+
 /** Code-owned lines for turns the model is never asked to handle. */
 export const DIDNT_CATCH = "Sorry, I didn't catch that. Could you say that again?";
 export const STILL_DIDNT_CATCH =
@@ -47,7 +54,8 @@ export const NO_PROGRESS_CLOSE =
  * so this line is what ends a call that went well — previously nothing did, and a resolved call
  * stayed open on a metered line until the caller hung up or Vapi timed it out.
  */
-export const RESOLVED_CLOSE = "Happy to help. Thanks for calling RelayPay.";
+export const RESOLVED_CLOSE =
+  "Thank you for your time and your patience. Glad I could help, and thanks for calling RelayPay.";
 /** Spoken when the tool server is unreachable and the server has written the ticket itself. */
 export const TOOLS_DOWN_FALLBACK =
   "I'm sorry, I can't reach our systems at the moment, so I can't look that up. I've logged this for the support team and someone will follow up.";

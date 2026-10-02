@@ -145,21 +145,48 @@ describe("lookup_payout", () => {
 });
 
 describe("lookup_customer", () => {
-  it("links with two agreeing identifiers and returns nothing about the account", async () => {
+  it("links with two agreeing identifiers and returns a summary that is safe to read out", async () => {
     const { body } = await call("lookup_customer", { company_name: "lagosledger", email: "amara@lagosledger.example" });
     expect(body.found).toBe(true);
     expect(body.linked).toBe(true);
-    for (const field of ["customer_id", "company_name", "plan", "account_status", "kyc_status", "support_notes", "route"]) {
-      expect(body[field]).toBeUndefined();
-    }
+    // The spec's fields are returned; support_summary is the only one meant to be spoken.
+    expect(body.customer_id).toBe("CUS-1001");
+    expect(typeof body.support_summary).toBe("string");
+    expect((body.support_summary as string).length).toBeGreaterThan(0);
+    // Support's own notes about the caller never leave the tool at all.
+    expect(body.support_notes).toBeUndefined();
     const { data } = await db.from("conversations").select("linked_customer_id").eq("id", conversationId).single();
     expect(data?.linked_customer_id).toBe("CUS-1001");
+  });
+
+  it("the spoken summary never states the plan, the status or the verification state", async () => {
+    const { body } = await call("lookup_customer", { company_name: "lagosledger", email: "amara@lagosledger.example" });
+    const spoken = (body.support_summary as string).toLowerCase();
+    for (const leak of ["growth", "starter", "scale", "restricted", "pending", "review required", "approved", "kyc"]) {
+      expect(spoken).not.toContain(leak);
+    }
+  });
+
+  // The caller's own name counts towards "enough identifying information", which is what the
+  // brief's example supplies: "I am Amara from LagosLedger".
+  it("a first name and a company are enough, as in the brief's own example", async () => {
+    const { body } = await call("lookup_customer", { contact_name: "Amara", company_name: "LagosLedger" });
+    expect(body.found).toBe(true);
+    expect(body.customer_id).toBe("CUS-1001");
+    expect(typeof body.support_summary).toBe("string");
   });
 
   it("negative: one identifier is not enough and does not reveal whether the company exists", async () => {
     const { body } = await call("lookup_customer", { company_name: "LagosLedger" });
     expect(body.found).toBe(false);
-    expect(body.customer_id).toBeUndefined();
+    expect(body.customer_id).toBeNull();
+    expect(body.support_summary).toBeNull();
+  });
+
+  it("negative: the right company with the wrong person finds nothing", async () => {
+    const { body } = await call("lookup_customer", { contact_name: "Chidi", company_name: "LagosLedger" });
+    expect(body.found).toBe(false);
+    expect(body.customer_id).toBeNull();
   });
 
   it("negative: two identifiers that belong to different customers find nothing", async () => {
