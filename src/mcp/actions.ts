@@ -358,7 +358,13 @@ export function registerActionTools(server: McpServer, db: SupabaseClient, ctx: 
         user_email: z.string().max(320),
         category: z.enum(ESCALATION_CATEGORIES),
         reason: z.string().min(5).max(500).describe("One factual line on why a human is needed."),
-        preferred_time: z.string().max(200).optional().describe("The caller's own words. Stored, never confirmed."),
+        preferred_time: z
+          .string()
+          .max(200)
+          .optional()
+          .describe(
+            "Do not use. A callback is arranged with check_callback_availability and book_callback, which make a real reservation support can see. Anything passed here is only a note and commits nobody.",
+          ),
         case_reference: z
           .string()
           .max(64)

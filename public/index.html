@@ -361,16 +361,38 @@ function precallValid() {
 }
 
 /** Sent once the call exists, so the server can attach them to the conversation. */
+/**
+ * Hand the typed details to the server, and keep trying until they land.
+ *
+ * The conversation row does not exist when the call starts. It is created when Vapi first calls
+ * our server, which is when the caller first SPEAKS — measured at 10 to 40 seconds after the
+ * call begins, because the greeting is a fixed line that needs no model. A single attempt always
+ * lost that race, so every call arrived with no name and no email and the agent asked for both,
+ * exactly what the form exists to prevent.
+ */
 async function sendPrecallDetails() {
   if (!callId) return;
-  try {
-    await fetch("/call/details", {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ call_id: callId, ...precallDetails() }),
-    });
-  } catch {
-    // The call still works; the agent falls back to asking by voice.
+  // Captured once: the caller may still be editing the fields while this retries.
+  const body = JSON.stringify({ call_id: callId, ...precallDetails() });
+  const deadline = Date.now() + 150_000;
+
+  while (Date.now() < deadline) {
+    const over = state.phase === "ended" || state.phase === "lost" || state.phase === "failed";
+    if (over) return;
+    try {
+      const res = await fetch("/call/details", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body,
+      });
+      if (res.ok) return;
+      // 404 means the call has not reached our server yet, which is the normal case here.
+      // 400 means the payload itself is wrong, and no amount of retrying will fix that.
+      if (res.status === 400) return;
+    } catch {
+      // A blip in the connection. The call is still up, so try again.
+    }
+    await new Promise((resolve) => setTimeout(resolve, 1500));
   }
 }
 
