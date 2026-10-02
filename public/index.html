@@ -56,6 +56,8 @@
   .reason.error { color: var(--error); }
   .hint { margin-top: 20px; font-size: 13px; color: var(--muted); }
 
+  .precall { margin-bottom: 24px; }
+  .precall-note { margin: -8px 0 0; font-size: 13px; color: var(--muted); }
   .review { margin-top: 28px; border-top: 1px solid var(--line); padding-top: 24px; }
   .review h2 { margin: 0 0 6px; font-size: 17px; font-weight: 600; letter-spacing: -0.01em; }
   .review-lede { margin: 0 0 20px; font-size: 14px; color: var(--muted); }
@@ -86,6 +88,17 @@
 
     <!-- The status line is the page's only running commentary on the call, so it has to be
          announced. The dot repeats it in colour alone and is skipped. -->
+    <!-- Taken before the call rather than asked for during it: speech-to-text mishears names
+         and addresses, and a handoff sent to a misheard address reaches nobody. -->
+    <section class="precall" id="precall">
+      <label class="field" for="precall-name">Your name</label>
+      <input class="input" id="precall-name" type="text" autocomplete="name" maxlength="100" />
+
+      <label class="field" for="precall-email">Your email</label>
+      <input class="input" id="precall-email" type="email" autocomplete="email" maxlength="254" inputmode="email" />
+      <p class="precall-note">Only used if your question needs a specialist to follow up.</p>
+    </section>
+
     <div class="status" role="status"><span class="dot" id="dot" aria-hidden="true"></span><span id="status"></span></div>
 
     <button id="start">Start call</button>
@@ -197,8 +210,12 @@ function render() {
   el("status").textContent = v.status;
   el("dot").className = v.tone ? "dot " + v.tone : "dot";
 
+  const inCall = !v.start.visible;
+  el("precall").hidden = inCall || state.phase === "ended" || state.phase === "lost" || state.phase === "failed";
   startBtn.hidden = !v.start.visible;
-  startBtn.disabled = !v.start.enabled;
+  // Enabled only when the machine allows a start AND the details are usable, so nobody
+  // reaches the agent without the name and address that keep it from asking for them.
+  startBtn.disabled = !v.start.enabled || !precallValid();
   startBtn.textContent = v.start.label;
 
   endBtn.hidden = !v.end.visible;
@@ -206,9 +223,13 @@ function render() {
 
   // Unhidden before the text is written: a live region that is still hidden when its content
   // changes is not reliably announced, so the order here is what makes the alert audible.
-  reason.hidden = !v.reason;
-  reason.className = v.reasonTone === "warn" ? "reason" : "reason error";
-  reason.textContent = v.reason;
+  // A disabled button with no explanation is the thing callers stare at. When the machine is
+  // willing to start and only the details are missing, say so instead of showing nothing.
+  const needsDetails = v.start.enabled && !precallValid();
+  const shown = needsDetails && !v.reason ? "Enter your name and email to start the call." : v.reason;
+  reason.hidden = !shown;
+  reason.className = needsDetails || v.reasonTone === "warn" ? "reason" : "reason error";
+  reason.textContent = shown;
 
   hint.hidden = !v.hintVisible;
 }
@@ -293,6 +314,43 @@ function errorMessage(err) {
 const EMAIL_RE = /^[^@\s]+@[^@\s]+\.[^@\s]+$/;
 let callId = null;
 let reviewRequested = false;
+
+/**
+ * The details the caller types before the call.
+ *
+ * Collected here rather than asked for during the call because a typed address is simply
+ * correct, and because every turn the agent spends spelling one back is a turn it is not
+ * spending on the problem. A phone caller has no form, so the agent still asks by voice.
+ */
+const precallDetails = () => ({
+  name: el("precall-name").value.trim(),
+  email: el("precall-email").value.trim(),
+  // The browser already knows this, so nobody is asked what time zone they are in.
+  timezone: Intl.DateTimeFormat().resolvedOptions().timeZone ?? null,
+});
+
+function precallValid() {
+  const { name, email } = precallDetails();
+  return name.length >= 2 && EMAIL_RE.test(email);
+}
+
+/** Sent once the call exists, so the server can attach them to the conversation. */
+async function sendPrecallDetails() {
+  if (!callId) return;
+  try {
+    await fetch("/call/details", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ call_id: callId, ...precallDetails() }),
+    });
+  } catch {
+    // The call still works; the agent falls back to asking by voice.
+  }
+}
+
+for (const id of ["precall-name", "precall-email"]) {
+  el(id).addEventListener("input", render);
+}
 
 function reviewStatus(text, isError) {
   const node = el("review-status");
@@ -426,6 +484,7 @@ startBtn.addEventListener("click", async () => {
     }
     const call = await vapi.start(config.assistantId);
     callId = call?.id ?? callId;
+    void sendPrecallDetails();
   } catch (err) {
     dispatch({ type: "start-failed", message: err && err.message ? err.message : "Something went wrong starting the call." });
   }
