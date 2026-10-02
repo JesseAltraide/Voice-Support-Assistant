@@ -57,11 +57,16 @@ export const SCENARIOS: Scenario[] = [
   {
     id: "3-customer-lookup",
     prdScenario: "3. Customer lookup",
-    expected: "Uses the customer lookup once two identifiers are given, and speaks nothing from the record.",
-    turns: ["I am Amara from LagosLedger. Can you check my account?", "My email is amara@lagosledger.example"],
+    expected:
+      "Uses the customer lookup on the caller's own name and company, summarises only what is safe to say, and speaks no plan, status, verification state or customer id.",
+    // The brief's own example sentence, unaided. Adding an email would test a kinder input than
+    // the one the scenario actually specifies.
+    turns: ["I am Amara from LagosLedger. Can you check my account?"],
     check: (f) =>
       !has(f, "lookup_customer") ? "lookup_customer was never called"
-      : said(f, /\b(growth|starter|scale)\b|\bactive\b|\bapproved\b|CUS-/i) ? "spoke a customer-record detail"
+      : said(f, /\b(growth|starter|scale)\b|\brestricted\b|\bkyc\b|\breview required\b|CUS-/i) ? "spoke a customer-record detail"
+      // The brief asks for a summary of safe account information, so saying nothing fails too.
+      : !said(f, /\b(open|verification|specialist)\b/i) ? "summarised nothing about the account"
       : null,
   },
   {

@@ -1,4 +1,6 @@
 import { randomUUID } from "node:crypto";
+import { writeFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 import { getDb, requireEnv } from "../shared/db.js";
 import { SCENARIOS, type Facts, type Scenario } from "./scenarios.js";
 
@@ -117,7 +119,41 @@ rows.push({
 const { error } = await db.from("evaluations").insert(rows);
 if (error) throw new Error(`could not write evaluations: ${error.message}`);
 
+// The submitted evidence table, written from the same rows that went to the database, so the
+// document and the records cannot disagree. Hand-transcribing this is how a table ends up
+// claiming a pass the run never produced.
+const cell = (s: string) => s.replace(/\s+/g, " ").replace(/\|/g, "\\|").trim();
+const clip = (s: string, n: number) => (s.length > n ? `${s.slice(0, n - 1)}…` : s);
+const evidence = [
+  "# Testing evidence",
+  "",
+  `Run \`${runId}\`, ${new Date().toISOString()}.`,
+  "",
+  `${results.filter((r) => r.passed).length} of ${results.length} automated scenarios passed.`,
+  "Every verdict is read from saved records — the tools that ran, the rows that exist, the answer",
+  "type the server derived — never from the agent's account of its own work.",
+  "",
+  "| Scenario | Expected behaviour | Actual behaviour | Result | Notes |",
+  "| --- | --- | --- | --- | --- |",
+  ...rows.map(
+    (r) =>
+      `| ${cell(r.scenario)} | ${cell(r.expected)} | ${clip(cell(r.actual), 300)} | ${r.passed ? "Pass" : "Fail"} | ${clip(cell(r.notes), 200)} |`,
+  ),
+  "",
+  "## Conversations",
+  "",
+  "Each row above is backed by a conversation in Supabase; its turns, tool calls, retrievals,",
+  "tickets and escalations can be read back by id.",
+  "",
+  ...rows.filter((r) => r.conversation_id).map((r) => `- ${cell(r.scenario)}: \`${r.conversation_id}\``),
+  "",
+].join("\n");
+
+const evidencePath = fileURLToPath(new URL("../../evaluation-evidence.md", import.meta.url));
+writeFileSync(evidencePath, evidence, "utf8");
+
 const passed = results.filter((r) => r.passed).length;
 console.log(`\nrun ${runId}`);
 console.log(`${passed}/${results.length} automated scenarios passed; ${rows.length} evaluation rows written.`);
+console.log(`evidence table: ${evidencePath}`);
 if (passed !== results.length) process.exitCode = 1;

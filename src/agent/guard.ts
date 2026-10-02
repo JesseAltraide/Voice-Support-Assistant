@@ -41,6 +41,23 @@ export function rephraseLine(lastQuestion: string | null): string {
  */
 export const UNCLEAR_LIMIT = 2;
 
+/**
+ * How many times a caller is redirected before the call is closed. A line that is not for them
+ * is not improved by hearing so a third time, and it is metered while they find that out.
+ */
+export const OFF_TOPIC_LIMIT = 2;
+
+/** Said when the redirect has been given and the caller is still not asking about RelayPay. */
+export const OFF_TOPIC_CLOSE =
+  "Since this line is only for RelayPay payments, invoices, payouts and accounts, I'll let you go. Thanks for calling.";
+
+/**
+ * Said when the offer of a callback could not be heard either. Claiming a request was logged
+ * would be a claim with no record behind it, so this closes honestly instead.
+ */
+export const UNHEARD_CLOSE =
+  "I'm sorry, I still can't hear you clearly, so I'll let you go. Please call back when you have a clearer line, or use the support options in your RelayPay dashboard.";
+
 /** Code-owned lines for turns the model is never asked to handle. */
 export const DIDNT_CATCH = "Sorry, I didn't catch that. Could you say that again?";
 export const STILL_DIDNT_CATCH =

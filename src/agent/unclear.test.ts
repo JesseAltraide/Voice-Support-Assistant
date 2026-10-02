@@ -1,6 +1,9 @@
 import { readFileSync } from "node:fs";
 import { describe, expect, test } from "vitest";
-import { DIDNT_CATCH, RECOVERY_LIMIT, STILL_DIDNT_CATCH, UNCLEAR_LIMIT } from "./guard.js";
+import {
+  DIDNT_CATCH, OFF_TOPIC_CLOSE, OFF_TOPIC_LIMIT, OFF_TOPIC_LINE, RECOVERY_LIMIT, STILL_DIDNT_CATCH,
+  UNCLEAR_LIMIT, UNHEARD_CLOSE,
+} from "./guard.js";
 import { deriveAnswerType, MODEL_ANSWER_TYPES, parseTypedReply, type TurnFacts } from "./turn-type.js";
 
 const NO_FACTS: TurnFacts = {
@@ -43,6 +46,31 @@ describe("unclear is not off_topic", () => {
   test("a vague but understood caller is a clarify, not an unclear", () => {
     // "My payment is stuck" is heard perfectly well; it is simply short on detail.
     expect(deriveAnswerType("clarify", NO_FACTS).type).toBe("clarify");
+  });
+});
+
+// Both dead ends seen on a real call: the callback offer repeating forever after the caller
+// accepted it, and a redirect given four times to someone asking about a cat.
+describe("neither failure can loop forever", () => {
+  test("the turn after the callback offer closes the call rather than offering again", () => {
+    const beyond = UNCLEAR_LIMIT; // the offer was the previous turn
+    expect(beyond + 1).toBeGreaterThan(UNCLEAR_LIMIT);
+    expect(UNHEARD_CLOSE).not.toBe(STILL_DIDNT_CATCH);
+  });
+
+  test("the closing line claims no record, because none was written", () => {
+    expect(UNHEARD_CLOSE).not.toMatch(/\b(logged|raised|created|booked|scheduled)\b/i);
+    expect(UNHEARD_CLOSE).toMatch(/call back|dashboard/i);
+  });
+
+  test("a caller is redirected at most twice before the call is closed", () => {
+    expect(OFF_TOPIC_LIMIT).toBe(2);
+    expect(OFF_TOPIC_CLOSE).not.toBe(OFF_TOPIC_LINE);
+  });
+
+  test("the off-topic close says why, rather than hanging up without explanation", () => {
+    expect(OFF_TOPIC_CLOSE).toMatch(/RelayPay/);
+    expect(OFF_TOPIC_CLOSE.length).toBeGreaterThan(20);
   });
 });
 

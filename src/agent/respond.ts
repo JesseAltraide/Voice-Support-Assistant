@@ -4,7 +4,8 @@ import { getDb } from "../shared/db.js";
 import { config } from "./config.js";
 import { extractFacts } from "./facts.js";
 import {
-  checkReply, DIDNT_CATCH, RECOVERY_LIMIT, UNCLEAR_LIMIT, rephraseLine, ERROR_FALLBACK, ERROR_FALLBACK_UNLOGGED, ESCALATED_FALLBACK, NO_PROGRESS_CLOSE, RESOLVED_CLOSE,
+  checkReply, DIDNT_CATCH, RECOVERY_LIMIT, UNCLEAR_LIMIT, OFF_TOPIC_LIMIT, OFF_TOPIC_CLOSE, UNHEARD_CLOSE,
+  rephraseLine, ERROR_FALLBACK, ERROR_FALLBACK_UNLOGGED, ESCALATED_FALLBACK, NO_PROGRESS_CLOSE, RESOLVED_CLOSE,
   OFF_TOPIC_LINE, SAFE_FALLBACK, STATE_YOUR_PROBLEM, STILL_DIDNT_CATCH, TOOLS_DOWN_FALLBACK,
 } from "./guard.js";
 import { classifyInput, isClosing, isRepeatQuestion } from "./caller-input.js";
@@ -343,6 +344,40 @@ async function runTurn(p: TurnRequest): Promise<TurnResult> {
   const unclearLine =
     derived.type === "unintelligible" ? (unclearBefore + 1 >= UNCLEAR_LIMIT ? STILL_DIDNT_CATCH : DIDNT_CATCH) : null;
   const codeOwned = derived.type === "off_topic" ? OFF_TOPIC_LINE : unclearLine;
+
+  // Two dead ends that a caller cannot talk their way out of, so code closes them rather than
+  // trusting the next turn to go better.
+  //
+  // The callback offer is made once. If the turn after it still cannot be heard, repeating the
+  // offer forever is what a caller experiences as the line being broken — they accepted, and
+  // heard the same sentence again. Close instead, without claiming a request was logged: no
+  // record exists, and inventing one here would be the claim this system refuses to make.
+  //
+  // Both complete the turn that is already open rather than calling codeOwnedTurn, which opens
+  // one of its own: that helper belongs before the turn exists, and using it here wrote a second
+  // row and left the first with no answer type — the shape this codebase reads as a caller who
+  // hung up mid-reply.
+  const closeWith = async (reply: string, type: AnswerType, note: string, unresolved: boolean): Promise<TurnResult> => {
+    await store.completeTurn(turn.id, { assistant: reply, answerType: type, note, guardTripped: false }).catch(log("completeTurn"));
+    if (unresolved) await bump(getDb(), id, "unresolved_count").catch(log("unresolved_count"));
+    await store.closeConversation(id).catch(log("closeConversation"));
+    await disposeSession(id);
+    return {
+      conversationId: id, reply, answerType: type, ended: true, guardTripped: false, guardReasons: [],
+      escalationCreated: false, toolCalls: raw.toolCallCount, agentMs: Date.now() - agentStarted, ms: Date.now() - started,
+    };
+  };
+
+  const unclearStreak = unclearBefore + 1;
+  if (derived.type === "unintelligible" && unclearStreak > UNCLEAR_LIMIT) {
+    return closeWith(UNHEARD_CLOSE, "unintelligible", `could not hear the caller ${unclearStreak} turns running, including the callback offer`, true);
+  }
+  // A caller who has been redirected and asks again is not going to be helped by a third
+  // redirect, and the line is metered while they discover that.
+  const offTopicStreak = countTrailing(recentTypes, "off_topic") + 1;
+  if (derived.type === "off_topic" && offTopicStreak >= OFF_TOPIC_LIMIT) {
+    return closeWith(OFF_TOPIC_CLOSE, "off_topic", `off topic ${offTopicStreak} turns running`, false);
+  }
   const guard = codeOwned
     ? { ok: true, reasons: [] as string[] }
     : checkReply({ reply: parsed.text, callerTexts: callerAll, groundedTexts, forbiddenNames: names, records });

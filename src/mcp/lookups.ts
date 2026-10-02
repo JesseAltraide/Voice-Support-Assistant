@@ -126,7 +126,7 @@ export function registerLookupTools(server: McpServer, db: SupabaseClient, ctx: 
     "lookup_customer",
     {
       description:
-        "Find the caller's customer record and link this conversation to it, so a ticket or escalation reaches the right account. Give every identifier the caller has offered (customer_id, email, company_name); one is enough. Read support_summary aloud exactly as written and say nothing else about the account: plan, status, verification and support notes are never spoken.",
+        "Find the caller's customer record and link this conversation to it, so a ticket or escalation reaches the right account. Pass EVERY identifier the caller has given you, including their own name: contact_name, company_name, email, customer_id. Two are needed, and a caller who says \"I am Amara from LagosLedger\" has given you two — contact_name and company_name. Read support_summary aloud exactly as written and say nothing else about the account: plan, status, verification and support notes are never spoken.",
       inputSchema: {
         customer_id: z.string().max(MAX_REF).optional(),
         email: z.string().max(254).optional(),
