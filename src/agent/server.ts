@@ -3,6 +3,7 @@ import { fileURLToPath } from "node:url";
 import express, { type NextFunction, type Request, type Response } from "express";
 import { describeSlot, SUPPORT_TIMEZONE } from "../mcp/callback-slots.js";
 import { draftPayload } from "./draft.js";
+import { hashToken, newSessionToken, SESSION_HOURS, sessionCookie, sessionExpiry, verifyPassword } from "./support-auth.js";
 import { getDb, requireEnv } from "../shared/db.js";
 import { agentAuthToken, mcpAuthToken } from "./config.js";
 import { dispatchHandoffEmails } from "./handoff-email.js";
@@ -171,7 +172,14 @@ const callEscalation = async (callId: unknown) => {
  * agent back to asking for a spelling the caller already gave us.
  */
 app.post("/call/details", rateLimitPublic, express.json({ limit: "4kb" }), async (req, res) => {
-  const body = (req.body ?? {}) as { call_id?: unknown; name?: unknown; email?: unknown; timezone?: unknown };
+  const body = (req.body ?? {}) as {
+    call_id?: unknown;
+    name?: unknown;
+    email?: unknown;
+    timezone?: unknown;
+    company?: unknown;
+    city?: unknown;
+  };
   if (typeof body.call_id !== "string" || !/^[0-9a-f-]{32,40}$/i.test(body.call_id)) {
     res.status(400).json({ error: "bad_call_id" });
     return;
@@ -186,12 +194,22 @@ app.post("/call/details", rateLimitPublic, express.json({ limit: "4kb" }), async
   // IANA zones only, so what reaches the record can be read back as a time.
   const zone = str(body.timezone, 64);
   const timezone = /^[A-Za-z]+\/[A-Za-z_+-]+(\/[A-Za-z_+-]+)?$/.test(zone) ? zone : null;
+  // Optional, and validated only for length. An empty box must never cost the caller their call,
+  // so unlike the name and email these can never produce a 400.
+  const company = str(body.company, 120) || null;
+  const city = str(body.city, 80) || null;
 
   const db = getDb();
   for (let attempt = 0; attempt < 5; attempt += 1) {
     const { data } = await db
       .from("conversations")
-      .update({ caller_name: name, caller_email: email, caller_timezone: timezone })
+      .update({
+        caller_name: name,
+        caller_email: email,
+        caller_timezone: timezone,
+        caller_company: company,
+        caller_city: city,
+      })
       .eq("vapi_call_id", body.call_id)
       .select("id");
     if ((data ?? []).length > 0) {
@@ -273,7 +291,102 @@ app.get("/config", rateLimitPublic, (_req, res) => {
  * returns the names, addresses and problems of real customers, so an unguessable call id is
  * not enough protection here.
  */
-app.get("/admin/escalations", requireAuth, async (_req, res) => {
+/**
+ * A signed-in support session, or null.
+ *
+ * An expired row is treated as absent rather than deleted here: a read path that writes turns
+ * every page load into a write, and the sweep can tidy them.
+ */
+async function supportSession(req: Request): Promise<{ email: string } | null> {
+  const token = sessionCookie(req.headers.cookie);
+  if (!token) return null;
+  const { data, error } = await getDb()
+    .from("support_sessions")
+    .select("expires_at,support_users(email)")
+    .eq("token_hash", hashToken(token))
+    .maybeSingle();
+  if (error || !data) return null;
+  if (new Date(data.expires_at as string).getTime() <= Date.now()) return null;
+  const user = data.support_users as unknown as { email: string } | null;
+  return user ? { email: user.email } : null;
+}
+
+/**
+ * The dashboard accepts either a signed-in person or the shared bearer token.
+ *
+ * The token stays because the evaluation runner and any script already use it. A browser gets a
+ * session instead, so ending one person's access does not mean rotating the secret the phone
+ * line depends on.
+ */
+async function requireSupport(req: Request, res: Response, next: NextFunction): Promise<void> {
+  if (await supportSession(req)) {
+    next();
+    return;
+  }
+  requireAuth(req, res, next);
+}
+
+app.post("/admin/login", rateLimitPublic, express.json({ limit: "2kb" }), async (req, res) => {
+  const body = (req.body ?? {}) as { email?: unknown; password?: unknown };
+  const email = typeof body.email === "string" ? body.email.trim().toLowerCase() : "";
+  const password = typeof body.password === "string" ? body.password : "";
+  // One message for every failure. Saying "no such user" tells an attacker which addresses are
+  // real, which is the only thing a login page can leak before anyone has signed in.
+  const reject = () => res.status(401).json({ error: "invalid_credentials" });
+  if (!EMAIL_RE.test(email) || password.length === 0) return reject();
+
+  const db = getDb();
+  const { data: user, error } = await db
+    .from("support_users")
+    .select("id,password_hash,display_name")
+    .eq("email", email)
+    .maybeSingle();
+  // Hashed even when there is no such user, so a missing address cannot be told from a wrong
+  // password by how long the answer took.
+  const stored = (user?.password_hash as string | undefined) ?? "scrypt$00$00";
+  const ok = await verifyPassword(password, stored);
+  if (error || !user || !ok) return reject();
+
+  const { token, tokenHash } = newSessionToken();
+  const inserted = await db
+    .from("support_sessions")
+    .insert({ user_id: user.id as string, token_hash: tokenHash, expires_at: sessionExpiry() });
+  if (inserted.error) {
+    res.status(500).json({ error: "could_not_sign_in" });
+    return;
+  }
+  await db.from("support_users").update({ last_login_at: new Date().toISOString() }).eq("id", user.id as string);
+
+  // httpOnly so no script on the page can read it; SameSite=Strict so another site cannot cause
+  // the browser to send it. Secure is set only off localhost, or the cookie would be dropped in
+  // local testing over plain http.
+  const secure = req.protocol === "https" ? " Secure;" : "";
+  res.setHeader(
+    "Set-Cookie",
+    `support_session=${token}; HttpOnly;${secure} SameSite=Strict; Path=/; Max-Age=${SESSION_HOURS * 3600}`,
+  );
+  res.json({ email, display_name: user.display_name ?? null });
+});
+
+app.post("/admin/logout", async (req, res) => {
+  const token = sessionCookie(req.headers.cookie);
+  if (token) await getDb().from("support_sessions").delete().eq("token_hash", hashToken(token));
+  res.setHeader("Set-Cookie", "support_session=; HttpOnly; SameSite=Strict; Path=/; Max-Age=0");
+  res.json({ ok: true });
+});
+
+/** Who is signed in, so the page can show the dashboard without asking them to log in again. */
+app.get("/admin/me", async (req, res) => {
+  const session = await supportSession(req);
+  res.setHeader("Cache-Control", "no-store");
+  if (!session) {
+    res.status(401).json({ error: "unauthorised" });
+    return;
+  }
+  res.json({ email: session.email });
+});
+
+app.get("/admin/escalations", requireSupport, async (_req, res) => {
   const db = getDb();
   const { data, error } = await db
     .from("escalations")
@@ -317,14 +430,18 @@ async function upcomingCallbacks() {
   if (error || !data?.length) return [];
 
   const ids = [...new Set(data.map((b) => b.conversation_id as string))];
-  const convs = await db.from("conversations").select("id,caller_name").in("id", ids);
-  const nameById = new Map((convs.data ?? []).map((c) => [c.id as string, (c.caller_name as string | null) ?? null]));
+  const convs = await db.from("conversations").select("id,caller_name,caller_company,caller_city").in("id", ids);
+  const byId = new Map((convs.data ?? []).map((c) => [c.id as string, c]));
 
   return data.map((b) => {
     const slot = new Date(b.slot_start as string);
+    const conv = byId.get(b.conversation_id as string);
     return {
       ...b,
-      caller_name: nameById.get(b.conversation_id as string) ?? null,
+      caller_name: (conv?.caller_name as string | null) ?? null,
+      // Context for whoever rings: who they work for, and roughly where they are.
+      caller_company: (conv?.caller_company as string | null) ?? null,
+      caller_city: (conv?.caller_city as string | null) ?? null,
       // Support reads this, so it is in support's own hours. The caller's zone rides alongside
       // so whoever rings knows what time it is where the phone is ringing.
       reads_as: describeSlot(slot, SUPPORT_TIMEZONE),

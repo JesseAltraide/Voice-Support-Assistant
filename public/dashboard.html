@@ -64,19 +64,44 @@
   .callback-when { font-weight: 600; font-size: 15.5px; }
   .callback-who { font-size: 14px; margin-top: 2px; }
   .callback-theirs { font-size: 13px; color: var(--muted); margin-top: 4px; }
+
+  .brand { display: flex; align-items: center; gap: 9px; }
+  .mark { width: 24px; height: 24px; display: block; }
+  .signed-in { display: flex; justify-content: flex-end; align-items: baseline; gap: 12px; font-size: 13px; color: var(--muted); }
+  .link {
+    background: none; border: none; padding: 0; font: inherit; font-size: 13px;
+    color: var(--blue); text-decoration: underline; cursor: pointer;
+  }
+  .link:hover { color: #0d2b50; background: none; }
+  #login { max-width: 360px; }
+  .field { display: block; margin: 14px 0 5px; font-size: 13.5px; font-weight: 500; }
+  .input { width: 100%; flex: none; }
+  #login-submit { margin-top: 18px; width: 100%; }
+  #login-note { margin-top: 14px; color: var(--error); }
 </style>
 </head>
 <body>
 <main>
-  <div class="brand">RelayPay</div>
-  <h1>Escalations</h1>
-  <p class="lede">Cases the assistant could not resolve, newest first.</p>
-
-  <div class="bar">
-    <input id="token" type="password" placeholder="Support access token" autocomplete="current-password" />
-    <button id="load">Load</button>
+  <div class="brand">
+    <svg class="mark" viewBox="0 0 28 28" role="img" aria-label="RelayPay" focusable="false">
+      <rect x="1" y="1" width="26" height="26" rx="7" fill="#123a6b" />
+      <path d="M9 20V8h5.4a3.8 3.8 0 0 1 0 7.6H9" fill="none" stroke="#ffffff" stroke-width="2.1"
+            stroke-linecap="square" />
+      <path d="M14 15.4 19 20" fill="none" stroke="#0e7c86" stroke-width="2.1" stroke-linecap="square" />
+    </svg>
+    <span>RelayPay</span>
   </div>
-  <p class="note" id="note" role="status" hidden></p>
+
+  <!-- The whole dashboard, hidden until somebody has signed in. -->
+  <section id="app" hidden>
+    <div class="signed-in">
+      <span id="whoami"></span>
+      <button class="link" id="logout" type="button">Sign out</button>
+    </div>
+
+    <h1>Escalations</h1>
+    <p class="lede">Cases the assistant could not resolve, newest first.</p>
+    <p class="note" id="note" role="status" hidden></p>
 
   <!-- A rota, not a queue. These are calls someone has to make at a stated time, so they come
        before the case list: a missed callback is a promise broken to the caller's face. -->
@@ -86,13 +111,33 @@
     <div id="callbacks"></div>
   </section>
 
-  <h2>Cases</h2>
-  <div id="cases"></div>
+    <h2>Cases</h2>
+    <div id="cases"></div>
+  </section>
+
+  <!-- Shown until somebody signs in. Deliberately plain: a login screen that explains itself is
+       a login screen telling an attacker which half they got wrong. -->
+  <section id="login" hidden>
+    <h1>Support sign-in</h1>
+    <p class="lede">For RelayPay support staff.</p>
+
+    <form id="login-form" autocomplete="on">
+      <label class="field" for="login-email">Email</label>
+      <input class="input" id="login-email" name="email" type="email" autocomplete="username"
+             maxlength="254" inputmode="email" required />
+
+      <label class="field" for="login-password">Password</label>
+      <input class="input" id="login-password" name="password" type="password"
+             autocomplete="current-password" maxlength="200" required />
+
+      <button id="login-submit" type="submit">Sign in</button>
+      <p class="note" id="login-note" role="alert" hidden></p>
+    </form>
+  </section>
 </main>
 
 <script type="module">
 const el = (id) => document.getElementById(id);
-const KEY = "relaypay.support.token";
 
 function note(text, isError) {
   el("note").hidden = !text;
@@ -181,7 +226,9 @@ function renderCallbacks(callbacks) {
 
     const who = document.createElement("div");
     who.className = "callback-who";
-    who.textContent = c.caller_name ? `Call ${c.caller_name}` : "Caller name not given";
+    const at = [c.caller_company, c.caller_city].filter(Boolean).join(", ");
+    who.textContent =
+      (c.caller_name ? `Call ${c.caller_name}` : "Caller name not given") + (at ? ` — ${at}` : "");
     row.append(who);
 
     // Whoever picks up the phone needs to know what time it is at the other end, or they will
@@ -197,17 +244,14 @@ function renderCallbacks(callbacks) {
 }
 
 async function load() {
-  const token = el("token").value.trim();
-  if (!token) return note("Enter the support access token.", true);
-  el("load").disabled = true;
   note("Loading…", false);
   try {
-    const res = await fetch("/admin/escalations", { headers: { Authorization: `Bearer ${token}` } });
-    if (res.status === 401) return note("That token was not accepted.", true);
+    // The session cookie is httpOnly, so it rides along on its own and no script here can read
+    // it. There is nothing for this page to hold on to, which is the point.
+    const res = await fetch("/admin/escalations", { credentials: "same-origin" });
+    if (res.status === 401) return showLogin("Your session has ended. Please sign in again.");
     if (!res.ok) return note("Could not load escalations.", true);
     const { escalations, callbacks } = await res.json();
-    // Kept for this browser only, so the token is not retyped on every refresh.
-    try { sessionStorage.setItem(KEY, token); } catch { /* private window */ }
 
     const cases = el("cases");
     cases.replaceChildren();
@@ -223,18 +267,71 @@ async function load() {
     note(`${escalations.length} escalation${escalations.length === 1 ? "" : "s"}.`, false);
   } catch {
     note("Could not reach the server.", true);
-  } finally {
-    el("load").disabled = false;
   }
 }
 
-el("load").addEventListener("click", load);
-el("token").addEventListener("keydown", (e) => { if (e.key === "Enter") load(); });
+function showLogin(message) {
+  el("app").hidden = true;
+  el("login").hidden = false;
+  const n = el("login-note");
+  n.hidden = !message;
+  n.textContent = message ?? "";
+  el("login-email").focus();
+}
 
+function showApp(email) {
+  el("login").hidden = true;
+  el("app").hidden = false;
+  el("whoami").textContent = email;
+  void load();
+}
+
+el("login-form").addEventListener("submit", async (event) => {
+  event.preventDefault();
+  const submit = el("login-submit");
+  submit.disabled = true;
+  const email = el("login-email").value.trim();
+  const password = el("login-password").value;
+  try {
+    const res = await fetch("/admin/login", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      credentials: "same-origin",
+      body: JSON.stringify({ email, password }),
+    });
+    if (!res.ok) {
+      // The server gives one answer for every kind of failure, and so does this.
+      showLogin("Those details were not recognised.");
+      return;
+    }
+    const me = await res.json();
+    // Cleared so a password is not left sitting in a field on a shared support machine.
+    el("login-password").value = "";
+    showApp(me.email);
+  } catch {
+    showLogin("Could not reach the server.");
+  } finally {
+    submit.disabled = false;
+  }
+});
+
+el("logout").addEventListener("click", async () => {
+  try {
+    await fetch("/admin/logout", { method: "POST", credentials: "same-origin" });
+  } catch { /* the cookie expires on its own either way */ }
+  el("login-email").value = "";
+  showLogin("You have been signed out.");
+});
+
+// A session that is still good survives a refresh, so a support agent reloading the page is not
+// asked to sign in again twelve times a shift.
 try {
-  const saved = sessionStorage.getItem(KEY);
-  if (saved) { el("token").value = saved; void load(); }
-} catch { /* private window: the agent types it once */ }
+  const me = await fetch("/admin/me", { credentials: "same-origin" });
+  if (me.ok) showApp((await me.json()).email);
+  else showLogin(null);
+} catch {
+  showLogin(null);
+}
 </script>
 </body>
 </html>
