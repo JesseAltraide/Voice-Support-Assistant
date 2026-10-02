@@ -385,7 +385,17 @@ async function runTurn(p: TurnRequest): Promise<TurnResult> {
   }
   const guard = codeOwned
     ? { ok: true, reasons: [] as string[] }
-    : checkReply({ reply: parsed.text, callerTexts: callerAll, groundedTexts, forbiddenNames: names, records });
+    : checkReply({
+        reply: parsed.text,
+        callerTexts: callerAll,
+        // The server's own notes count as grounding. They carry facts the server supplied and the
+        // prompt then orders the agent to say — the current date, and the hours a callback can be
+        // booked. Without this the guard blocked "between 08:00 and 17:00" as an invented number,
+        // which is the server contradicting itself at the caller's expense.
+        groundedTexts: [...groundedTexts, ...notes],
+        forbiddenNames: names,
+        records,
+      });
 
   let spoken = codeOwned ?? parsed.text;
   let answerType: AnswerType = derived.type;

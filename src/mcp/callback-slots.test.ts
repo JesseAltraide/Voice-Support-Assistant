@@ -158,3 +158,18 @@ describe("telling the caller the booking window", () => {
     for (const s of slots) expect(slotRuleRefusal(s, NOW)).toBeNull();
   });
 });
+
+// The window is spoken aloud, and the speech guard checks every number against what the server
+// actually supplied. If the sentence the agent is told to say is not itself grounded, the guard
+// deletes it — the server contradicting itself at the caller's expense.
+describe("the window is sayable as well as correct", () => {
+  test("gives a spoken form, because nobody says 'seventeen hundred' on the phone", () => {
+    const w = describeWindow(SUPPORT_TIMEZONE, NOW);
+    expect(w).toContain("8 in the morning");
+    expect(w).toContain("5 in the afternoon");
+  });
+
+  test("the spoken form follows the caller's own zone too", () => {
+    expect(describeWindow("Africa/Nairobi", NOW)).toContain("7 in the evening");
+  });
+});

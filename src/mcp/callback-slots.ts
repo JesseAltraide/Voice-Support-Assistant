@@ -133,7 +133,18 @@ export function describeWindow(callerTimeZone: string | null, now: Date = new Da
       return fmt(SUPPORT_TIMEZONE);
     }
   };
-  return `Monday to Friday, ${time(atSupportHour(day, OPENS_HOUR))} to ${time(atSupportHour(day, CLOSES_HOUR))}`;
+  // Both forms, because the agent speaks and nobody says "zero eight hundred" on the phone. The
+  // guard checks a stated number against what it was given, so if the note held only "08:00" the
+  // natural "between 8 and 5" would be refused as invented.
+  const spoken = (d: Date) => {
+    const [h, m] = time(d).split(":").map(Number);
+    const hour = h! % 12 === 0 ? 12 : h! % 12;
+    const partOfDay = h! < 12 ? "in the morning" : h! < 18 ? "in the afternoon" : "in the evening";
+    return `${hour}${m ? `:${String(m).padStart(2, "0")}` : ""} ${partOfDay}`;
+  };
+  const open = atSupportHour(day, OPENS_HOUR);
+  const close = atSupportHour(day, CLOSES_HOUR);
+  return `Monday to Friday, ${time(open)} to ${time(close)}, that is between ${spoken(open)} and ${spoken(close)}`;
 }
 
 /** How the time reads to the caller, in their own zone, so it can be said back to them. */
