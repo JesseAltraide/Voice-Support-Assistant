@@ -219,8 +219,19 @@ interface EscalationArgs {
 }
 
 async function runEscalation(db: SupabaseClient, conversationId: string, args: EscalationArgs): Promise<ToolOutcome> {
-  const name = clean(args.user_name, 100);
-  const email = clean(args.user_email, 254).toLowerCase();
+  // What the caller typed on the form wins over what the agent heard. The agent is told not to
+  // ask when these exist, but a model that asks anyway must not be able to overwrite a correct
+  // address with a misheard one.
+  const onFile = await db
+    .from("conversations")
+    .select("caller_name,caller_email")
+    .eq("id", conversationId)
+    .maybeSingle();
+  const typedName = (onFile.data?.caller_name as string | null) ?? null;
+  const typedEmail = (onFile.data?.caller_email as string | null) ?? null;
+
+  const name = clean(typedName ?? args.user_name, 100);
+  const email = clean(typedEmail ?? args.user_email, 254).toLowerCase();
   const invalid = name.length < 2 ? "invalid_name" : !EMAIL.test(email) ? "invalid_email" : null;
   if (invalid) {
     return {

@@ -8,6 +8,8 @@ export interface NoteInput {
   turnCount: number;
   elapsedMs: number;
   escalationExists: boolean;
+  /** Given on the form before a web call. Absent on a phone call, which has no form. */
+  caller?: { name: string | null; email: string | null };
 }
 
 export interface NoteResult {
@@ -27,6 +29,17 @@ const OFFER =
 export function buildNotes(i: NoteInput): NoteResult {
   const notes: string[] = [];
   let offerMade = false;
+
+  // The caller typed these before the call, so they are spelled the way they meant them. Asking
+  // again wastes the opening of an escalation on something already correct, and invites a
+  // mishearing where there was none.
+  const name = i.caller?.name?.trim();
+  const email = i.caller?.email?.trim();
+  if (name && email) {
+    notes.push(
+      `This caller gave their details before the call: name ${name}, email ${email}. Do NOT ask for either; they are already recorded and will be used for any escalation. Never read the email address aloud.`,
+    );
+  }
   const [firstOffer, secondOffer] = config.unresolvedOfferAt;
 
   if (i.escalationExists) {
