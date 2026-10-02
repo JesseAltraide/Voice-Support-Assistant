@@ -88,6 +88,9 @@ app.use((_req, res, next) => {
  * nothing else stands in front of them. In process and per instance, which matches how the
  * conversation lock already works here; a second instance would need shared state.
  */
+/** The one address check, shared by every route that writes a contact email. */
+const EMAIL_RE = /^[^@\s]+@[^@\s]+\.[^@\s]+$/;
+
 const PUBLIC_WINDOW_MS = 60_000;
 const PUBLIC_MAX_REQUESTS = 30;
 const publicHits = new Map<string, { count: number; resetAt: number }>();
@@ -135,6 +138,47 @@ const callEscalation = async (callId: unknown) => {
   return esc.error || !esc.data ? null : esc.data;
 };
 
+/**
+ * What the caller typed before the call, attached to the conversation once Vapi has created it.
+ *
+ * The browser posts this the moment the call connects, which can be before the server has seen
+ * the call at all, so a miss is retried briefly rather than dropped: losing it would send the
+ * agent back to asking for a spelling the caller already gave us.
+ */
+app.post("/call/details", rateLimitPublic, express.json({ limit: "4kb" }), async (req, res) => {
+  const body = (req.body ?? {}) as { call_id?: unknown; name?: unknown; email?: unknown; timezone?: unknown };
+  if (typeof body.call_id !== "string" || !/^[0-9a-f-]{32,40}$/i.test(body.call_id)) {
+    res.status(400).json({ error: "bad_call_id" });
+    return;
+  }
+  const str = (v: unknown, max: number) => (typeof v === "string" ? v.trim().slice(0, max) : "");
+  const name = str(body.name, 100);
+  const email = str(body.email, 254).toLowerCase();
+  if (name.length < 2 || !EMAIL_RE.test(email)) {
+    res.status(400).json({ error: "invalid_details" });
+    return;
+  }
+  // IANA zones only, so what reaches the record can be read back as a time.
+  const zone = str(body.timezone, 64);
+  const timezone = /^[A-Za-z]+\/[A-Za-z_+-]+(\/[A-Za-z_+-]+)?$/.test(zone) ? zone : null;
+
+  const db = getDb();
+  for (let attempt = 0; attempt < 5; attempt += 1) {
+    const { data } = await db
+      .from("conversations")
+      .update({ caller_name: name, caller_email: email, caller_timezone: timezone })
+      .eq("vapi_call_id", body.call_id)
+      .select("id");
+    if ((data ?? []).length > 0) {
+      res.json({ ok: true });
+      return;
+    }
+    await new Promise((r) => setTimeout(r, 400));
+  }
+  // The call never reached us. The agent falls back to asking by voice, which still works.
+  res.status(404).json({ error: "no_conversation" });
+});
+
 app.get("/escalation/draft", rateLimitPublic, async (req, res) => {
   const row = await callEscalation(req.query.call_id);
   // The same answer whether the call is unknown or simply had no escalation: distinguishing
@@ -171,7 +215,7 @@ app.post("/escalation/confirm", rateLimitPublic, express.json({ limit: "4kb" }),
   const name = typeof body.name === "string" ? body.name.trim().slice(0, 100) : "";
   const email = typeof body.email === "string" ? body.email.trim().toLowerCase().slice(0, 254) : "";
   // The same check the escalation tool applies, because this writes the same two fields.
-  if (name.length < 2 || !/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email)) {
+  if (name.length < 2 || !EMAIL_RE.test(email)) {
     res.status(400).json({ error: "invalid_details" });
     return;
   }
