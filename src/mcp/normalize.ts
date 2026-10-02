@@ -33,6 +33,25 @@ const MONTHS = [
   "July", "August", "September", "October", "November", "December",
 ];
 
+/** Case- and spacing-insensitive. Shared so a company typed on the form and one said by voice
+ *  are judged by the exact same rule lookup_customer already uses. */
+export const normaliseCompany = (s: string): string => s.trim().toLowerCase().replace(/\s+/g, " ");
+
+/**
+ * Whether a supplied name is consistent with the one on a record.
+ *
+ * Two letters minimum, so an initial is not an identifier: "A from LagosLedger" would otherwise
+ * match any contact whose name begins with that letter. Every word the caller gave must be on
+ * the record, in either order, so "Amara" alone still agrees with "Amara Okafor".
+ */
+export function namesAgree(recorded: string, supplied: string): boolean {
+  const parts = (s: string) =>
+    s.toLowerCase().replace(/[^\p{L}\p{N}\s]+/gu, " ").split(/\s+/).filter((w) => w.length >= 2);
+  const onRecord = new Set(parts(recorded));
+  const given = parts(supplied);
+  return given.length > 0 && given.every((part) => onRecord.has(part));
+}
+
 export type DateTense = "past" | "today" | "future";
 
 export function todayIso(now: Date = new Date()): string {

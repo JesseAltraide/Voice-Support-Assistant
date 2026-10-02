@@ -10,7 +10,12 @@ export interface NoteInput {
   elapsedMs: number;
   escalationExists: boolean;
   /** Given on the form before a web call. Absent on a phone call, which has no form. */
-  caller?: { name: string | null; email: string | null; timezone?: string | null; isCustomer?: boolean };
+  caller?: {
+    name: string | null;
+    email: string | null;
+    timezone?: string | null;
+    verifyState?: "verified" | "unconfirmed" | "guest" | null;
+  };
   /** Injectable so the clock note can be asserted. Defaults to the real one. */
   now?: Date;
 }
@@ -46,13 +51,23 @@ export function buildNotes(i: NoteInput): NoteResult {
     notes.push(
       `This caller is ${name}, and their email is already on file from the form they filled in. Do NOT ask for their name or their email, and do not say the email address: both are recorded and will be used for any escalation.`,
     );
-    // The address they typed was matched against the customer list when the call connected, so
-    // the answer is already known and must not be asked for again by voice.
-    notes.push(
-      i.caller?.isCustomer === true
-        ? "That address matches an account on file, so this caller is verified. Look up their transactions and payouts directly when they give you a reference. Do NOT ask them to confirm a company name or an email first."
-        : "That address does not match any account on file, so this caller is a GUEST. Answer general questions about RelayPay's products, fees and timelines as usual. You cannot look anything up for them: do not call lookup_transaction, lookup_payout or lookup_customer, because there is no account to look in. If they ask about a transaction, payout or any account detail, say so PLAINLY and DIRECTLY: you do not have access to transaction or account information for them. Do not soften it with 'let me check' and do not offer to log a request or put them in front of a specialist over this — a specialist has nothing more to look up than you do without a matching account. You may still help with anything general.",
-    );
+    // What was typed was matched against the customer list in code when the call connected, so
+    // the answer is already known and must not be re-derived or asked for again by voice, except
+    // in the one state below that was built to ask exactly one more thing.
+    const state = i.caller?.verifyState ?? "guest";
+    if (state === "verified") {
+      notes.push(
+        "Enough of what was typed on the form matches an account on file, so this caller is VERIFIED. Look up their transactions and payouts directly when they give you a reference. Do NOT ask them to confirm a company name or an email first.",
+      );
+    } else if (state === "unconfirmed") {
+      notes.push(
+        "Exactly one of the name or email on the form matched an account, and no company was given, so this caller is UNCONFIRMED, not yet a guest. If they ask about a transaction, payout or account detail, ask for the company name on the account, then call lookup_customer with it plus their name or email. If that links them, treat them as verified from then on. If it does not, say plainly: there is no account on file for you, so I can't look into transactions, payouts or anything account-related. Do not offer to log a request or escalate over this specific refusal.",
+      );
+    } else {
+      notes.push(
+        "Nothing typed on the form matched an account on file, so this caller is a GUEST. Answer general questions about RelayPay's products, fees and timelines as usual. You cannot look anything up for them: do not call lookup_transaction, lookup_payout or lookup_customer, because there is no account to look in, and do not ask for a company name — there is nothing left to confirm. If they ask about a transaction, payout or any account detail, say so PLAINLY and DIRECTLY, in close to these words: 'There's no account on file for you, so I can't look into transactions, payouts or anything account-related.' Do not soften it with 'let me check' and do not offer to log a request or put them in front of a specialist over this — a specialist has nothing more to look up than you do without a matching account. You may still help with anything general.",
+      );
+    }
   }
   // A model has no clock, and a caller booking a callback says "Tuesday at ten", not an instant.
   // Without an anchor it would guess the date, and a guessed date is a slot in the wrong week.

@@ -282,7 +282,7 @@ async function runTurn(p: TurnRequest): Promise<TurnResult> {
       name: conv.caller_name ?? null,
       email: conv.caller_email ?? null,
       timezone: conv.caller_timezone ?? null,
-      isCustomer: conv.linked_customer_id !== null,
+      verifyState: conv.caller_verify_state,
     },
   });
 

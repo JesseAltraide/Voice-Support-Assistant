@@ -117,29 +117,29 @@ describe("the clock note", () => {
 // The address typed on the form is checked against the customer list when the call connects, so
 // the agent is told who it is talking to instead of asking again by voice.
 describe("customer or guest", () => {
-  const forCaller = (isCustomer: boolean) =>
+  const forCaller = (verifyState: "verified" | "unconfirmed" | "guest") =>
     buildNotes({
       ...healthy,
-      caller: { name: "Amara", email: "amara@lagosledger.example", timezone: "Africa/Lagos", isCustomer },
+      caller: { name: "Amara", email: "amara@lagosledger.example", timezone: "Africa/Lagos", verifyState },
     }).notes.join(" ");
 
   it("a matched caller is told to look things up without asking again", () => {
-    const n = forCaller(true);
-    expect(n).toMatch(/verified/i);
+    const n = forCaller("verified");
+    expect(n).toMatch(/VERIFIED/);
     expect(n).toMatch(/do not ask/i);
   });
 
   it("an unmatched caller is a guest, with no account tools", () => {
-    const n = forCaller(false);
+    const n = forCaller("guest");
     expect(n).toMatch(/guest/i);
     expect(n).toMatch(/lookup_transaction/);
-    expect(n).toMatch(/do not have access to transaction or account information/i);
+    expect(n).toMatch(/no account on file for you/i);
   });
 
   it("the guest is still helped, not turned away", () => {
     // A guest asking about fees or timelines gets the same answer anyone does. Only the records
     // are closed to them, because there are none to open.
-    expect(forCaller(false)).toMatch(/general questions/i);
+    expect(forCaller("guest")).toMatch(/general questions/i);
   });
 
   it("says nothing either way when no form was filled in", () => {
@@ -152,7 +152,7 @@ describe("customer or guest", () => {
 });
 
 describe("the guest line is blunt, and never pushes an escalation", () => {
-  const guestNote = () => buildNotes({ ...healthy, caller: { name: "Amara", email: "nobody@nowhere.test", timezone: "Africa/Lagos", isCustomer: false } }).notes.join(" ");
+  const guestNote = () => buildNotes({ ...healthy, caller: { name: "Amara", email: "nobody@nowhere.test", timezone: "Africa/Lagos", verifyState: "guest" } }).notes.join(" ");
 
   it("says plainly and directly that access is not possible", () => {
     const n = guestNote();

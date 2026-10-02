@@ -4,6 +4,7 @@ import express, { type NextFunction, type Request, type Response } from "express
 import { describeSlot, SUPPORT_TIMEZONE } from "../mcp/callback-slots.js";
 import { draftPayload } from "./draft.js";
 import { buildTranscript } from "./transcript.js";
+import { type CustomerCandidate, verifyCaller, type VerifyState } from "./verify.js";
 import {
   clearLoginAttempts,
   hashToken,
@@ -145,17 +146,22 @@ function rateLimitPublic(req: Request, res: Response, next: NextFunction): void 
  * address alone because the caller typed it; an address said aloud would not be proof of
  * anything, which is why lookup_customer still needs two identifiers.
  */
-async function customerForEmail(db: ReturnType<typeof getDb>, email: string): Promise<Record<string, string>> {
-  // Exact, never a pattern. ilike reads % and _ as wildcards, so "%@lagosledger.example" passed
-  // the email check and matched a real account — typing your way into somebody else's records.
-  // The address arrives already lowercased, and stored addresses are lowercase.
-  const { data, error } = await db
-    .from("customers")
-    .select("customer_id")
-    .eq("contact_email", email)
-    .maybeSingle();
-  if (error || !data) return {};
-  return { linked_customer_id: data.customer_id as string };
+/**
+ * The caller's verification outcome from whatever they typed on the form, matched in code
+ * against every customer — never in a query built from their own input, which is how the
+ * wildcard bypass happened the first time this existed.
+ */
+async function verifyFromForm(
+  db: ReturnType<typeof getDb>,
+  typed: { email: string; name: string; company: string | null },
+): Promise<{ linked_customer_id: string | null; caller_verify_state: VerifyState }> {
+  const { data, error } = await db.from("customers").select("customer_id,contact_email,contact_name,company_name");
+  const result = verifyCaller(error ? [] : ((data ?? []) as CustomerCandidate[]), {
+    email: typed.email,
+    name: typed.name,
+    company: typed.company,
+  });
+  return { linked_customer_id: result.customerId, caller_verify_state: result.state };
 }
 
 /** The conversation a Vapi call id belongs to, or null. Shared by everything keyed on a call. */
@@ -231,23 +237,27 @@ app.post("/call/details", rateLimitPublic, express.json({ limit: "4kb" }), async
   const city = str(body.city, 80) || null;
 
   const db = getDb();
+  // Checked once here, in code, instead of being asked for again by voice. Two of email, name
+  // and company agreeing with the same customer links the call outright; exactly one agreeing,
+  // with no company typed, leaves the agent room to ask for it aloud; anything else is a guest.
+  const verified = await verifyFromForm(db, { email, name, company });
   for (let attempt = 0; attempt < 5; attempt += 1) {
-    const { data } = await db
-      .from("conversations")
-      .update({
-        caller_name: name,
-        caller_email: email,
-        caller_timezone: timezone,
-        caller_company: company,
-        caller_city: city,
-        // The address they typed is checked against the customer list here, once, instead of
-        // being asked for again by voice. A match means their own records are theirs to see; no
-        // match means a guest, who gets general help and no account data at all. A spoken email
-        // is a mishearing waiting to happen, and this one was typed.
-        ...(await customerForEmail(db, email)),
-      })
-      .eq("vapi_call_id", body.call_id)
-      .select("id");
+    const fields: Record<string, unknown> = {
+      caller_name: name,
+      caller_email: email,
+      caller_timezone: timezone,
+      caller_company: company,
+      caller_city: city,
+      linked_customer_id: verified.linked_customer_id,
+      caller_verify_state: verified.caller_verify_state,
+    };
+    let { data, error } = await db.from("conversations").update(fields).eq("vapi_call_id", body.call_id).select("id");
+    // Tolerates migration 009 not having run yet: the call still works, just without the third
+    // verification state recorded, rather than failing the whole pre-call form over one column.
+    if (error && /column .*caller_verify_state.* does not exist/i.test(error.message)) {
+      delete fields.caller_verify_state;
+      ({ data, error } = await db.from("conversations").update(fields).eq("vapi_call_id", body.call_id).select("id"));
+    }
     if ((data ?? []).length > 0) {
       res.json({ ok: true });
       return;

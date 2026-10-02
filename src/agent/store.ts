@@ -26,10 +26,11 @@ export interface ConversationState {
   caller_name: string | null;
   caller_email: string | null;
   caller_timezone: string | null;
+  caller_verify_state: "verified" | "unconfirmed" | "guest" | null;
 }
 
 const STATE_COLUMNS =
-  "id,status,channel,is_test,linked_customer_id,unresolved_count,handoff_offers_made,failed_lookup_count,clarify_streak,turn_count,started_at,ended_at,caller_name,caller_email,caller_timezone";
+  "id,status,channel,is_test,linked_customer_id,unresolved_count,handoff_offers_made,failed_lookup_count,clarify_streak,turn_count,started_at,ended_at,caller_name,caller_email,caller_timezone,caller_verify_state";
 
 function must<T>(result: { data: T; error: { message: string } | null }, what: string): NonNullable<T> {
   if (result.error) throw new Error(`${what}: ${result.error.message}`);
@@ -66,7 +67,17 @@ export async function createConversation(p: {
 
 // The reads and writes a turn cannot proceed without are retried past a transient network blip.
 export async function getConversation(id: string): Promise<ConversationState | null> {
-  const { data, error } = await withRetry(async () => db().from("conversations").select(STATE_COLUMNS).eq("id", id).maybeSingle());
+  let { data, error } = await withRetry(async () => db().from("conversations").select(STATE_COLUMNS).eq("id", id).maybeSingle());
+  // Tolerates migration 009 not having run yet: every turn reads this, so a missing column here
+  // must degrade to "unknown verification state" rather than break the whole call.
+  if (error && /column .*caller_verify_state.* does not exist/i.test(error.message)) {
+    const fallback = STATE_COLUMNS.replace(",caller_verify_state", "");
+    const retried = (await withRetry(async () =>
+      db().from("conversations").select(fallback).eq("id", id).maybeSingle(),
+    )) as { data: Record<string, unknown> | null; error: typeof error };
+    error = retried.error;
+    data = retried.data ? ({ ...retried.data, caller_verify_state: null } as typeof data) : null;
+  }
   check(error, "get conversation");
   return (data as ConversationState | null) ?? null;
 }

@@ -2,7 +2,7 @@ import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import type { SupabaseClient } from "@supabase/supabase-js";
 import { z } from "zod";
 import { bump, runTool, type ToolOutcome } from "./instrument.js";
-import { normalizeId, normalizeStatus, todayIso } from "./normalize.js";
+import { namesAgree, normaliseCompany, normalizeId, normalizeStatus, todayIso } from "./normalize.js";
 import {
   payoutSpeakable,
   transactionSpeakable,
@@ -32,8 +32,6 @@ const askedPayout = z
   .describe(
     "ONLY the fields the caller explicitly asked about. If one is empty on the record it comes back in unavailable_fields. Leave out anything the caller did not ask about.",
   );
-
-const normaliseCompany = (s: string) => s.trim().toLowerCase().replace(/\s+/g, " ");
 
 /** The limit is enforced BEFORE any query, so a blocked conversation cannot keep probing references. */
 async function lookupsBlocked(db: SupabaseClient, conversationId: string): Promise<boolean> {
@@ -72,23 +70,6 @@ function nextStepFor(status: string, unavailable: string[]): string {
 }
 
 const CUSTOMER_MISS = { linked: false, customer_id: null, company_name: null, support_summary: null };
-
-/**
- * Whether the name the caller gave agrees with the one on the record.
- *
- * Callers introduce themselves by first name — "I'm Amara from LagosLedger" — so every part
- * they give must appear in the recorded name, not the whole of it. "Amara" agrees with
- * "Amara Okafor"; "Chidi" does not, and neither does "Amara Bello".
- */
-function namesAgree(recorded: string, supplied: string): boolean {
-  // Two letters minimum, so an initial is not an identifier: "A from LagosLedger" would
-  // otherwise match any contact whose name begins with that letter.
-  const parts = (s: string) =>
-    s.toLowerCase().replace(/[^\p{L}\p{N}\s]+/gu, " ").split(/\s+/).filter((w) => w.length >= 2);
-  const onRecord = new Set(parts(recorded));
-  const given = parts(supplied);
-  return given.length > 0 && given.every((part) => onRecord.has(part));
-}
 
 /**
  * Upper bound on the customer rows scanned when a company name is the only identifier. The

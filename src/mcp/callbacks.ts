@@ -204,47 +204,38 @@ export function registerCallbackTools(server: McpServer, db: SupabaseClient, ctx
         }
 
         const slotEnd = new Date(slot.getTime() + SLOT_MINUTES * 60_000).toISOString();
-        // One booking per conversation. A caller asking again is rearranging, so the existing
-        // row moves rather than a second one appearing beside it.
-        const existing = await db
-          .from("callback_bookings")
-          .select("id")
-          .eq("conversation_id", conv.id)
-          .eq("status", "booked")
-          .maybeSingle();
-        if (existing.error) throw new Error(existing.error.message);
+        const escalationId =
+          args.escalation_id && /^[0-9a-f-]{32,40}$/i.test(args.escalation_id) ? args.escalation_id : null;
 
-        let bookingId: string;
-        if (existing.data) {
-          bookingId = existing.data.id as string;
-          // A moved booking is confirmed again, because the time in the old email is now wrong.
-          const { error } = await db
-            .from("callback_bookings")
-            // Only the time. The confirmation columns are rewritten by confirmByEmail, which
-            // tolerates their absence — so a booking never depends on a migration having run.
-            .update({ slot_start: slot.toISOString(), slot_end: slotEnd, caller_timezone: conv.caller_timezone })
-            .eq("id", bookingId);
-          if (error) throw new Error(error.message);
-        } else {
-          const { data, error } = await db
-            .from("callback_bookings")
-            .insert({
-              conversation_id: conv.id,
-              escalation_id: args.escalation_id && /^[0-9a-f-]{32,40}$/i.test(args.escalation_id) ? args.escalation_id : null,
-              slot_start: slot.toISOString(),
-              slot_end: slotEnd,
-              caller_timezone: conv.caller_timezone,
-              status: "booked",
-            })
-            .select("id")
-            .single();
-          if (error || !data) throw new Error(error?.message ?? "booking not written");
-          bookingId = data.id as string;
+        // One round trip, inside a Postgres advisory lock keyed on the slot: the count and the
+        // write happen atomically, so two callers claiming the last seat at the same instant
+        // cannot both win it. The earlier version checked capacity, then wrote, as two separate
+        // steps — the gap between them was the double-booking window.
+        const { data: rows, error } = await db.rpc("book_callback_slot", {
+          p_conversation_id: conv.id,
+          p_escalation_id: escalationId,
+          p_slot_start: slot.toISOString(),
+          p_slot_end: slotEnd,
+          p_caller_timezone: conv.caller_timezone,
+          p_capacity: SLOT_CAPACITY,
+        });
+        if (error) throw new Error(error.message);
+        const row = (rows as Array<{ booked: boolean; booking_id: string | null; moved: boolean }>)[0];
+        if (!row?.booked) {
+          return {
+            result: {
+              booked: false,
+              reason: REFUSAL_REASON.full,
+              alternatives: await alternatives(db, slot, now, conv.caller_timezone),
+              next_step: "say_the_reason_then_offer_the_alternatives",
+            },
+            summary: "booked=false reason=full (lost the race for the last seat)",
+          };
         }
 
         // Awaited, so the outcome is recorded before the agent speaks — but it can only mark the
         // row, never fail the booking.
-        await confirmByEmail(db, bookingId, conv, slot);
+        await confirmByEmail(db, row.booking_id as string, conv, slot);
 
         return {
           result: {
@@ -254,7 +245,7 @@ export function registerCallbackTools(server: McpServer, db: SupabaseClient, ctx
             support_timezone: SUPPORT_TIMEZONE,
             next_step: "tell_them_the_callback_is_arranged_and_read_the_time_back",
           },
-          summary: `booked=true moved=${existing.data ? "yes" : "no"}`,
+          summary: `booked=true moved=${row.moved ? "yes" : "no"}`,
         };
       }),
   );
