@@ -3,6 +3,7 @@ import { fileURLToPath } from "node:url";
 import express, { type NextFunction, type Request, type Response } from "express";
 import { describeSlot, SUPPORT_TIMEZONE } from "../mcp/callback-slots.js";
 import { draftPayload } from "./draft.js";
+import { buildTranscript } from "./transcript.js";
 import {
   clearLoginAttempts,
   hashToken,
@@ -428,6 +429,28 @@ app.get("/admin/me", async (req, res) => {
     return;
   }
   res.json({ email: session.email });
+});
+
+/** Loose on purpose: the id came from our own query string, not from a caller's input. */
+const UUID_RE = /^[0-9a-f-]{32,40}$/i;
+
+app.get("/admin/conversations/:id/transcript", requireSupport, async (req, res) => {
+  const id = req.params.id;
+  if (typeof id !== "string" || !UUID_RE.test(id)) {
+    res.status(400).json({ error: "bad_conversation_id" });
+    return;
+  }
+  const { data, error } = await getDb()
+    .from("conversation_turns")
+    .select("user_transcript,assistant_response,created_at")
+    .eq("conversation_id", id)
+    .order("created_at", { ascending: true });
+  if (error) {
+    res.status(500).json({ error: "could_not_read" });
+    return;
+  }
+  res.setHeader("Cache-Control", "no-store");
+  res.json({ lines: buildTranscript(data ?? []) });
 });
 
 app.get("/admin/escalations", requireSupport, async (_req, res) => {

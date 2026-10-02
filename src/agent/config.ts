@@ -19,6 +19,10 @@ export const config = {
   sessionIdleMs: 300_000,
   unresolvedOfferAt: [3, 6] as const,
   forbiddenNamesTtlMs: 60_000,
+  // Lets the handoff email link straight to a conversation's transcript. Optional: when unset
+  // (local dev, where this is blank), the email still names the conversation, just without a
+  // clickable link.
+  publicUrl: (process.env.AGENT_SERVER_URL || "").replace(/\/$/, "") || null,
 } as const;
 
 export const MCP_TOOL_NAMES = [

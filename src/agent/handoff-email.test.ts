@@ -191,3 +191,21 @@ describe("when SMTP is not configured", () => {
     expect(result.skipped).toBeUndefined();
   });
 });
+
+// Support asked for a way to click straight into the call's transcript from the handoff email.
+describe("the transcript link", () => {
+  afterEach(() => {
+    delete process.env.AGENT_SERVER_URL;
+  });
+
+  test("names the conversation even with no public URL configured", () => {
+    const mail = composeHandoffEmail(ROW, "support@relaypay.example");
+    expect(mail.text).toContain("conv-1");
+  });
+
+  test("without a configured public URL, there is no bare link to click", () => {
+    // A link to nowhere is worse than no link: it reads as broken rather than as "look it up".
+    const mail = composeHandoffEmail(ROW, "support@relaypay.example");
+    expect(mail.text).not.toMatch(/https?:\/\//);
+  });
+});

@@ -51,7 +51,7 @@ export function buildNotes(i: NoteInput): NoteResult {
     notes.push(
       i.caller?.isCustomer === true
         ? "That address matches an account on file, so this caller is verified. Look up their transactions and payouts directly when they give you a reference. Do NOT ask them to confirm a company name or an email first."
-        : "That address does not match any account on file, so this caller is a GUEST. Answer general questions about RelayPay's products, fees and timelines as usual. You cannot look anything up for them: do not call lookup_transaction, lookup_payout or lookup_customer, because there is no account to look in. If they ask about a specific transaction, payout or their account, say plainly that you cannot see account details for the address they gave, and offer to put them in front of a specialist who can check it properly.",
+        : "That address does not match any account on file, so this caller is a GUEST. Answer general questions about RelayPay's products, fees and timelines as usual. You cannot look anything up for them: do not call lookup_transaction, lookup_payout or lookup_customer, because there is no account to look in. If they ask about a transaction, payout or any account detail, say so PLAINLY and DIRECTLY: you do not have access to transaction or account information for them. Do not soften it with 'let me check' and do not offer to log a request or put them in front of a specialist over this — a specialist has nothing more to look up than you do without a matching account. You may still help with anything general.",
     );
   }
   // A model has no clock, and a caller booking a callback says "Tuesday at ten", not an instant.

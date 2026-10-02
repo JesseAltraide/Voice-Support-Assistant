@@ -53,6 +53,19 @@
   li { margin-bottom: 6px; }
   .meta { font-size: 13px; color: var(--muted); }
   .empty { color: var(--muted); }
+  .transcript-toggle {
+    margin-top: 10px; padding: 0; background: none; border: none; color: var(--teal);
+    font: inherit; font-size: 13px; text-decoration: underline; cursor: pointer;
+  }
+  .transcript-toggle:hover { background: none; color: #0a5a62; }
+  .transcript-panel {
+    margin-top: 10px; padding: 12px 14px; background: var(--bg); border: 1px solid var(--line);
+    border-radius: 8px; max-height: 320px; overflow-y: auto; font-size: 13.5px;
+  }
+  .transcript-line { display: flex; gap: 8px; padding: 3px 0; line-height: 1.5; }
+  .transcript-who { flex: 0 0 52px; font-weight: 600; color: var(--muted); }
+  .transcript-line.caller .transcript-who { color: var(--blue); }
+  .transcript-line.agent .transcript-who { color: var(--teal); }
 
   h2 { margin: 28px 0 4px; font-size: 17px; font-weight: 600; letter-spacing: -0.01em; }
   h2 + .lede { margin-bottom: 14px; }
@@ -200,7 +213,60 @@ function renderCase(e) {
   bits.push(`Conversation ${e.conversation_id}`);
   meta.textContent = bits.join(" · ");
 
-  box.append(head, tags, list, meta);
+  // Click-to-expand rather than loading every transcript up front: a page of fifty cases would
+  // otherwise fire fifty transcript requests nobody asked to see.
+  const toggle = document.createElement("button");
+  toggle.type = "button";
+  toggle.className = "link transcript-toggle";
+  toggle.textContent = "View transcript";
+  const panel = document.createElement("div");
+  panel.className = "transcript-panel";
+  panel.hidden = true;
+  let loaded = false;
+
+  toggle.addEventListener("click", async () => {
+    panel.hidden = !panel.hidden;
+    toggle.textContent = panel.hidden ? "View transcript" : "Hide transcript";
+    if (panel.hidden || loaded) return;
+    loaded = true;
+    panel.textContent = "Loading…";
+    try {
+      const res = await fetch(`/admin/conversations/${encodeURIComponent(e.conversation_id)}/transcript`, {
+        credentials: "same-origin",
+      });
+      if (!res.ok) {
+        panel.textContent = "Could not load the transcript.";
+        return;
+      }
+      const { lines } = await res.json();
+      panel.replaceChildren();
+      if (!lines.length) {
+        const p = document.createElement("p");
+        p.className = "empty";
+        p.textContent = "No transcript recorded for this call.";
+        panel.append(p);
+        return;
+      }
+      // textContent only, never innerHTML: a transcript line is a caller's or the agent's own
+      // words, shown, never executed.
+      for (const line of lines) {
+        const row = document.createElement("div");
+        row.className = `transcript-line ${line.speaker}`;
+        const who = document.createElement("span");
+        who.className = "transcript-who";
+        who.textContent = line.speaker === "caller" ? "Caller" : "Agent";
+        const text = document.createElement("span");
+        text.textContent = line.text;
+        row.append(who, text);
+        panel.append(row);
+      }
+    } catch {
+      panel.textContent = "Could not reach the server.";
+    }
+  });
+
+  box.dataset.conversationId = e.conversation_id ?? "";
+  box.append(head, tags, list, meta, toggle, panel);
   return box;
 }
 
@@ -208,6 +274,19 @@ function renderCase(e) {
  * The callbacks still to make. Everything is set with textContent, never innerHTML: a caller's
  * name reaches this page from what someone typed on a form, and it is shown, never executed.
  */
+/**
+ * Opens straight to the case named in the handoff email's link, once, so the staff member who
+ * clicked it lands on the conversation rather than scrolling to find it.
+ */
+function openLinkedConversation() {
+  const id = new URLSearchParams(location.search).get("conversation");
+  if (!id) return;
+  const box = document.querySelector(`.case[data-conversation-id="${CSS.escape(id)}"]`);
+  if (!box) return;
+  box.scrollIntoView({ block: "center" });
+  box.querySelector(".transcript-toggle")?.click();
+}
+
 function renderCallbacks(callbacks) {
   const section = el("callbacks-section");
   const list = el("callbacks");
@@ -274,6 +353,7 @@ async function load() {
       cases.append(p);
     } else {
       for (const e of escalations) cases.append(renderCase(e));
+      openLinkedConversation();
     }
     renderCallbacks(callbacks === undefined ? [] : callbacks);
     note(`${escalations.length} escalation${escalations.length === 1 ? "" : "s"}.`, false);

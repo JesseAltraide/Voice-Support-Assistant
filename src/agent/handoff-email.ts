@@ -9,6 +9,7 @@
  */
 
 import { createTransport, type Transporter } from "nodemailer";
+import { config } from "./config.js";
 import { getDb } from "../shared/db.js";
 import { isTransient } from "../shared/retry.js";
 
@@ -205,6 +206,14 @@ export function composeHandoffEmail(row: EscalationRow, inbox: string): HandoffE
     "",
     `Conversation id: ${row.conversation_id}`,
     `Escalation id:   ${row.id}`,
+    "",
+    // A clickable transcript, when the server knows its own public address. Points at the
+    // dashboard (sign-in required, same as every other account-touching page) rather than
+    // embedding the transcript here: the brief is built from records and belongs in email, the
+    // caller's raw words are account data and belong behind the same login as the rest of it.
+    config.publicUrl
+      ? `Full transcript: ${config.publicUrl}/dashboard.html?conversation=${row.conversation_id}`
+      : `Full transcript: open the dashboard and look up conversation ${row.conversation_id}.`,
     "",
     "Reply to the caller at the address above. This message was generated from saved records;",
     "nobody has contacted the caller yet.",

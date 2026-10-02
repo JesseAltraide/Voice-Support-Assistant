@@ -133,7 +133,7 @@ describe("customer or guest", () => {
     const n = forCaller(false);
     expect(n).toMatch(/guest/i);
     expect(n).toMatch(/lookup_transaction/);
-    expect(n).toMatch(/cannot see account details/i);
+    expect(n).toMatch(/do not have access to transaction or account information/i);
   });
 
   it("the guest is still helped, not turned away", () => {
@@ -148,5 +148,21 @@ describe("customer or guest", () => {
     const n = buildNotes({ ...healthy }).notes.join(" ");
     expect(n).not.toMatch(/guest/i);
     expect(n).not.toMatch(/verified/i);
+  });
+});
+
+describe("the guest line is blunt, and never pushes an escalation", () => {
+  const guestNote = () => buildNotes({ ...healthy, caller: { name: "Amara", email: "nobody@nowhere.test", timezone: "Africa/Lagos", isCustomer: false } }).notes.join(" ");
+
+  it("says plainly and directly that access is not possible", () => {
+    const n = guestNote();
+    expect(n).toMatch(/PLAINLY/);
+    expect(n).toMatch(/DIRECTLY/);
+  });
+
+  it("explicitly forbids escalating or logging a request over this", () => {
+    const n = guestNote();
+    expect(n).toMatch(/do not offer to log a request/i);
+    expect(n).toMatch(/specialist has nothing more to look up/i);
   });
 });
