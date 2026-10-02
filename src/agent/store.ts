@@ -25,10 +25,11 @@ export interface ConversationState {
   /** Typed on the form before a web call. Null on a phone call, which has no form. */
   caller_name: string | null;
   caller_email: string | null;
+  caller_timezone: string | null;
 }
 
 const STATE_COLUMNS =
-  "id,status,channel,is_test,linked_customer_id,unresolved_count,handoff_offers_made,failed_lookup_count,clarify_streak,turn_count,started_at,ended_at,caller_name,caller_email";
+  "id,status,channel,is_test,linked_customer_id,unresolved_count,handoff_offers_made,failed_lookup_count,clarify_streak,turn_count,started_at,ended_at,caller_name,caller_email,caller_timezone";
 
 function must<T>(result: { data: T; error: { message: string } | null }, what: string): NonNullable<T> {
   if (result.error) throw new Error(`${what}: ${result.error.message}`);

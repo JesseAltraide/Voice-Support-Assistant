@@ -278,7 +278,7 @@ async function runTurn(p: TurnRequest): Promise<TurnResult> {
     turnCount: conv.turn_count,
     elapsedMs: Date.now() - Date.parse(conv.started_at),
     escalationExists: escalated,
-    caller: { name: conv.caller_name ?? null, email: conv.caller_email ?? null },
+    caller: { name: conv.caller_name ?? null, email: conv.caller_email ?? null, timezone: conv.caller_timezone ?? null },
   });
 
   // One budget for the whole turn, including any repair. Per-call timeouts let a repaired turn

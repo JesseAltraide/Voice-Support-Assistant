@@ -10,7 +10,15 @@ const healthy: NoteInput = {
   elapsedMs: 10_000,
   escalationExists: false,
 };
-const notesFor = (over: Partial<NoteInput>) => buildNotes({ ...healthy, ...over });
+const isClock = (n: string) => n.startsWith("Right now it is");
+
+// Every turn carries the clock note, which is standing context rather than an instruction. The
+// assertions below are about what the server tells the agent to DO, so it is dropped here and
+// tested on its own further down.
+const notesFor = (over: Partial<NoteInput>) => {
+  const r = buildNotes({ ...healthy, ...over });
+  return { ...r, notes: r.notes.filter((n) => !isClock(n)) };
+};
 
 describe("handoff offers (#43, #44)", () => {
   it("negative: ten answered turns in a row produce no offer", () => {
@@ -72,5 +80,36 @@ describe("other server notes", () => {
   it("soft wrap-up at the turn cap", () => {
     expect(notesFor({ turnCount: 19 }).notes).toEqual([]);
     expect(notesFor({ turnCount: 20 }).notes.join(" ")).toMatch(/wrap up/i);
+  });
+});
+
+// A model has no clock. Without this note it would guess today's date, and a guessed date books
+// a callback in the wrong week — which the caller only discovers when nobody rings.
+describe("the clock note", () => {
+  const clockFor = (over: Partial<NoteInput>) =>
+    buildNotes({ ...healthy, ...over }).notes.filter(isClock).join(" ");
+
+  const NOW = new Date("2026-10-05T06:00:00Z");
+
+  it("is present on every turn, however the call is going", () => {
+    expect(clockFor({ now: NOW })).toContain("2026-10-05T06:00:00.000Z");
+    expect(clockFor({ now: NOW, unresolved: 7, offersMade: 2, escalationExists: true })).toContain("2026-10-05");
+  });
+
+  it("names the caller's own zone, because ten means ten where they are sitting", () => {
+    const note = clockFor({ now: NOW, caller: { name: "Amara", email: "a@b.com", timezone: "Europe/London" } });
+    expect(note).toContain("Europe/London");
+  });
+
+  it("says nothing about a zone when the caller never gave one", () => {
+    // A phone call has no form, so there is no zone to name. Inventing one would be worse than
+    // leaving the tool to fall back to support's own.
+    const note = clockFor({ now: NOW, caller: { name: "Amara", email: "a@b.com", timezone: null } });
+    expect(note).not.toMatch(/timezone is/);
+    expect(note).toContain("2026-10-05");
+  });
+
+  it("asks for a full UTC instant, which is what the callback tools accept", () => {
+    expect(clockFor({ now: NOW })).toMatch(/ISO-8601 UTC instant/);
   });
 });

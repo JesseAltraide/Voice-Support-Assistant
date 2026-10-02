@@ -9,7 +9,9 @@ export interface NoteInput {
   elapsedMs: number;
   escalationExists: boolean;
   /** Given on the form before a web call. Absent on a phone call, which has no form. */
-  caller?: { name: string | null; email: string | null };
+  caller?: { name: string | null; email: string | null; timezone?: string | null };
+  /** Injectable so the clock note can be asserted. Defaults to the real one. */
+  now?: Date;
 }
 
 export interface NoteResult {
@@ -44,6 +46,16 @@ export function buildNotes(i: NoteInput): NoteResult {
       `This caller is ${name}, and their email is already on file from the form they filled in. Do NOT ask for their name or their email, and do not say the email address: both are recorded and will be used for any escalation.`,
     );
   }
+  // A model has no clock, and a caller booking a callback says "Tuesday at ten", not an instant.
+  // Without an anchor it would guess the date, and a guessed date is a slot in the wrong week.
+  // The caller's own zone is named too: "ten" means ten where they are sitting.
+  const zone = i.caller?.timezone?.trim();
+  notes.push(
+    `Right now it is ${(i.now ?? new Date()).toISOString()}.` +
+      (zone ? ` The caller's own timezone is ${zone}.` : "") +
+      " Work out any time the caller names in their own timezone, and pass it to a tool as a full ISO-8601 UTC instant.",
+  );
+
   const [firstOffer, secondOffer] = config.unresolvedOfferAt;
 
   if (i.escalationExists) {
