@@ -129,13 +129,14 @@ describe("request handling", () => {
     expect(res.status).toBe(401);
   });
 
-  it("positive control: a correct token and header lists the seven tools over real HTTP", async () => {
+  it("positive control: a correct token and header lists the nine tools over real HTTP", async () => {
     const res = await post({ ...authed, "x-conversation-id": conversationId }, LIST_TOOLS);
     expect(res.status).toBe(200);
     const json = parseRpc(await res.text());
     expect(json.result.tools.map((t: { name: string }) => t.name).sort()).toEqual([
-      "create_escalation", "create_support_ticket", "log_conversation_event",
-      "lookup_customer", "lookup_payout", "lookup_transaction", "search_knowledge",
+      "book_callback", "check_callback_availability", "create_escalation", "create_support_ticket",
+      "log_conversation_event", "lookup_customer", "lookup_payout", "lookup_transaction",
+      "search_knowledge",
     ]);
   });
 

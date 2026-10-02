@@ -83,6 +83,11 @@ export const OFF_TOPIC_LINE =
 export interface GuardRecords {
   escalationExists: boolean;
   ticketExists: boolean;
+  /**
+   * A callback slot genuinely reserved for this conversation. Until this existed, no row could
+   * make "a callback is arranged" true, which is why the commitment rules refused it outright.
+   */
+  callbackBooked?: boolean;
 }
 
 export interface GuardInput {
@@ -359,7 +364,18 @@ export function checkReply(input: GuardInput): GuardResult {
 
   const backed = input.records?.escalationExists === true || input.records?.ticketExists === true;
   if (!backed && unnegatedMatch(norm, RECORD_CLAIM)) reasons.add("unbacked_claim");
-  if (COMMITMENTS.some((p) => unnegatedMatch(norm, p))) reasons.add("promise");
+  // A booked callback is the one commitment this system can keep, because a row says so. The
+  // rules still apply to everything else in the same breath: a real booking does not license a
+  // promise that someone has already read the case.
+  const bookingClaim =
+    /\b(call ?back|call)\b[^.]{0,30}\b(is|has been)\s+(booked|arranged|scheduled|set up)\b|\b(booked|arranged|scheduled)\s+(a|your|the)\s+call ?back\b/;
+  const booked = input.records?.callbackBooked === true;
+  // The exemption is the booking sentence itself, not a relaxing of the rule. Dropping whole
+  // patterns while a booking exists would also drop the promises they were written to catch:
+  // "I have scheduled a call for you right away" is still a commitment nobody can keep.
+  if (COMMITMENTS.some((p) => unnegatedMatch(norm, p)) && !(booked && bookingClaim.test(norm))) {
+    reasons.add("promise");
+  }
   if (unnegatedMatch(norm, RELATIVE_TIME)) reasons.add("promise");
   if (unnegatedMatch(norm, GUARANTEE)) reasons.add("promise");
   if (ADVICE.test(norm)) reasons.add("advice");

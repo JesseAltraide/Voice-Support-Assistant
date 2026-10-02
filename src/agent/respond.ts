@@ -332,6 +332,10 @@ async function runTurn(p: TurnRequest): Promise<TurnResult> {
   const records = {
     escalationExists: recordsBefore.escalationExists || facts.escalationCreated,
     ticketExists: recordsBefore.ticketExists || raw.toolResults.some((r) => !r.isError && typeof r.data?.ticket_id === "string"),
+    // A booking made in this same turn counts. Otherwise the agent reserves the slot and is then
+    // forbidden from telling the caller so, which is the one thing it must do next.
+    callbackBooked:
+      recordsBefore.callbackBooked || raw.toolResults.some((r) => !r.isError && r.data?.booked === true),
   };
   if (extracted.facts.toolsFailed) {
     return dependencyFailure(id, turn.id, "all tool calls failed", raw.toolCallCount, agentStarted, started);

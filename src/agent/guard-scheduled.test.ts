@@ -60,3 +60,38 @@ describe("intent is sayable, completion is not", () => {
     expect(speak("I'll escalate this to the appropriate team right away.").ok).toBe(false);
   });
 });
+
+// A callback is the one commitment this system can actually keep, once a row says so. Before the
+// booking table existed the rule refused it outright, because nothing could make it true.
+describe("a booked callback is sayable, an unbooked one is not", () => {
+  const withBooking = (reply: string, callbackBooked: boolean) =>
+    checkReply({
+      reply,
+      callerTexts: [],
+      groundedTexts: [],
+      forbiddenNames: [],
+      records: { escalationExists: true, ticketExists: false, callbackBooked },
+    });
+
+  const CLAIMS = ["Your callback is booked for Tuesday at 10.", "I have arranged your callback."];
+
+  test.each(CLAIMS)("allows %j once the booking exists", (reply) => {
+    expect(withBooking(reply, true).ok, `should have been allowed: ${reply}`).toBe(true);
+  });
+
+  test.each(CLAIMS)("refuses %j when nothing was booked", (reply) => {
+    const result = withBooking(reply, false);
+    expect(result.ok, `should have been blocked: ${reply}`).toBe(false);
+    expect(result.reasons).toContain("promise");
+  });
+
+  // The exemption is for the booking claim alone. Everything else the rule forbids stays
+  // forbidden in the same breath, so a real booking cannot be used to smuggle one through.
+  test.each([
+    "Someone has already reviewed your case.",
+    "A specialist will call you tomorrow.",
+    "I have scheduled a call for you right away.",
+  ])("a real booking does not license %j", (reply) => {
+    expect(withBooking(reply, true).ok, `should have been blocked: ${reply}`).toBe(false);
+  });
+});

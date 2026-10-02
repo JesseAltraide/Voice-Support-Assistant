@@ -180,12 +180,25 @@ export async function hasEscalation(conversationId: string): Promise<boolean> {
 }
 
 /** Which records actually exist, so a claim in a reply can be checked against a fact. */
-export async function recordFlags(conversationId: string): Promise<{ escalationExists: boolean; ticketExists: boolean }> {
-  const [escalations, tickets] = await Promise.all([
+export async function recordFlags(
+  conversationId: string,
+): Promise<{ escalationExists: boolean; ticketExists: boolean; callbackBooked: boolean }> {
+  const [escalations, tickets, callbacks] = await Promise.all([
     countRows("escalations", conversationId),
     countRows("support_tickets", conversationId),
+    // Status matters here in a way it does not for the others: a cancelled booking must not
+    // leave the agent free to keep saying a callback is arranged.
+    (async () => {
+      const { count, error } = await db()
+        .from("callback_bookings")
+        .select("*", { count: "exact", head: true })
+        .eq("conversation_id", conversationId)
+        .eq("status", "booked");
+      check(error, "count callback_bookings");
+      return count ?? 0;
+    })(),
   ]);
-  return { escalationExists: escalations > 0, ticketExists: tickets > 0 };
+  return { escalationExists: escalations > 0, ticketExists: tickets > 0, callbackBooked: callbacks > 0 };
 }
 
 let namesCache: { at: number; names: string[] } | null = null;

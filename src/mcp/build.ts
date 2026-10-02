@@ -2,6 +2,7 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import type { SupabaseClient } from "@supabase/supabase-js";
 import { getDb } from "../shared/db.js";
 import { registerActionTools } from "./actions.js";
+import { registerCallbackTools } from "./callbacks.js";
 import type { ToolContext } from "./context.js";
 import { registerKnowledgeTool } from "./knowledge.js";
 import { registerLookupTools } from "./lookups.js";
@@ -12,5 +13,6 @@ export function buildServer(ctx: ToolContext, db: SupabaseClient = getDb()): Mcp
   registerLookupTools(server, db, ctx);
   registerActionTools(server, db, ctx);
   registerKnowledgeTool(server, db, ctx);
+  registerCallbackTools(server, db, ctx);
   return server;
 }

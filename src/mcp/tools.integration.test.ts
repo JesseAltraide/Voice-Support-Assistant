@@ -53,11 +53,12 @@ afterAll(async () => {
 });
 
 describe("tool registration", () => {
-  it("exposes exactly the seven tools", async () => {
+  it("exposes exactly the nine tools", async () => {
     const { tools } = await client.listTools();
     expect(tools.map((t) => t.name).sort()).toEqual([
-      "create_escalation", "create_support_ticket", "log_conversation_event",
-      "lookup_customer", "lookup_payout", "lookup_transaction", "search_knowledge",
+      "book_callback", "check_callback_availability", "create_escalation", "create_support_ticket",
+      "log_conversation_event", "lookup_customer", "lookup_payout", "lookup_transaction",
+      "search_knowledge",
     ]);
   });
 });
