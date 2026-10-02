@@ -36,8 +36,12 @@ export function buildNotes(i: NoteInput): NoteResult {
   const name = i.caller?.name?.trim();
   const email = i.caller?.email?.trim();
   if (name && email) {
+    // The address itself is deliberately withheld. The speech guard blocks any email the caller
+    // did not say aloud, and a typed one was never said — so handing it to the model only
+    // creates a sentence that would get the whole reply replaced. The escalation tool reads the
+    // stored value directly, so the address is used correctly without being seen here.
     notes.push(
-      `This caller gave their details before the call: name ${name}, email ${email}. Do NOT ask for either; they are already recorded and will be used for any escalation. Never read the email address aloud.`,
+      `This caller is ${name}, and their email is already on file from the form they filled in. Do NOT ask for their name or their email, and do not say the email address: both are recorded and will be used for any escalation.`,
     );
   }
   const [firstOffer, secondOffer] = config.unresolvedOfferAt;
