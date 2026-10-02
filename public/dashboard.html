@@ -53,6 +53,17 @@
   li { margin-bottom: 6px; }
   .meta { font-size: 13px; color: var(--muted); }
   .empty { color: var(--muted); }
+
+  h2 { margin: 28px 0 4px; font-size: 17px; font-weight: 600; letter-spacing: -0.01em; }
+  h2 + .lede { margin-bottom: 14px; }
+  /* The time is the loudest thing here: it is what the person reading has to act on. */
+  .callback {
+    background: var(--surface); border: 1px solid var(--line); border-left: 3px solid var(--teal);
+    border-radius: 10px; padding: 14px 18px; margin-bottom: 10px;
+  }
+  .callback-when { font-weight: 600; font-size: 15.5px; }
+  .callback-who { font-size: 14px; margin-top: 2px; }
+  .callback-theirs { font-size: 13px; color: var(--muted); margin-top: 4px; }
 </style>
 </head>
 <body>
@@ -67,6 +78,15 @@
   </div>
   <p class="note" id="note" role="status" hidden></p>
 
+  <!-- A rota, not a queue. These are calls someone has to make at a stated time, so they come
+       before the case list: a missed callback is a promise broken to the caller's face. -->
+  <section id="callbacks-section" hidden>
+    <h2>Callbacks due</h2>
+    <p class="lede">Times the assistant agreed with callers, soonest first.</p>
+    <div id="callbacks"></div>
+  </section>
+
+  <h2>Cases</h2>
   <div id="cases"></div>
 </main>
 
@@ -139,6 +159,43 @@ function renderCase(e) {
   return box;
 }
 
+/**
+ * The callbacks still to make. Everything is set with textContent, never innerHTML: a caller's
+ * name reaches this page from what someone typed on a form, and it is shown, never executed.
+ */
+function renderCallbacks(callbacks) {
+  const section = el("callbacks-section");
+  const list = el("callbacks");
+  list.replaceChildren();
+  section.hidden = callbacks.length === 0;
+  if (!callbacks.length) return;
+
+  for (const c of callbacks) {
+    const row = document.createElement("div");
+    row.className = "callback";
+
+    const when = document.createElement("div");
+    when.className = "callback-when";
+    when.textContent = c.reads_as;
+    row.append(when);
+
+    const who = document.createElement("div");
+    who.className = "callback-who";
+    who.textContent = c.caller_name ? `Call ${c.caller_name}` : "Caller name not given";
+    row.append(who);
+
+    // Whoever picks up the phone needs to know what time it is at the other end, or they will
+    // ring someone at midnight having read a perfectly correct local time.
+    if (c.caller_timezone && c.caller_reads_as !== c.reads_as) {
+      const theirs = document.createElement("div");
+      theirs.className = "callback-theirs";
+      theirs.textContent = `${c.caller_reads_as} for them (${c.caller_timezone})`;
+      row.append(theirs);
+    }
+    list.append(row);
+  }
+}
+
 async function load() {
   const token = el("token").value.trim();
   if (!token) return note("Enter the support access token.", true);
@@ -148,7 +205,7 @@ async function load() {
     const res = await fetch("/admin/escalations", { headers: { Authorization: `Bearer ${token}` } });
     if (res.status === 401) return note("That token was not accepted.", true);
     if (!res.ok) return note("Could not load escalations.", true);
-    const { escalations } = await res.json();
+    const { escalations, callbacks } = await res.json();
     // Kept for this browser only, so the token is not retyped on every refresh.
     try { sessionStorage.setItem(KEY, token); } catch { /* private window */ }
 
@@ -162,6 +219,7 @@ async function load() {
     } else {
       for (const e of escalations) cases.append(renderCase(e));
     }
+    renderCallbacks(callbacks ?? []);
     note(`${escalations.length} escalation${escalations.length === 1 ? "" : "s"}.`, false);
   } catch {
     note("Could not reach the server.", true);

@@ -1,7 +1,7 @@
 import { timingSafeEqual } from "node:crypto";
 import { fileURLToPath } from "node:url";
 import express, { type NextFunction, type Request, type Response } from "express";
-import { describeSlot } from "../mcp/callback-slots.js";
+import { describeSlot, SUPPORT_TIMEZONE } from "../mcp/callback-slots.js";
 import { draftPayload } from "./draft.js";
 import { getDb, requireEnv } from "../shared/db.js";
 import { agentAuthToken, mcpAuthToken } from "./config.js";
@@ -293,8 +293,45 @@ app.get("/admin/escalations", requireAuth, async (_req, res) => {
       // Split back into the issues the caller actually raised, rather than one block of text.
       issues: String(e.reason ?? "").split("\n").filter(Boolean),
     })),
+    callbacks: await upcomingCallbacks(),
   });
 });
+
+/**
+ * The callbacks support still has to make, soonest first.
+ *
+ * This is a rota, not a queue: it is ordered by when the call is due rather than when it was
+ * booked, because a booking made this morning for next week matters less than one made last week
+ * for this afternoon. Times just gone are kept for an hour so a missed one stays visible.
+ */
+async function upcomingCallbacks() {
+  const db = getDb();
+  const since = new Date(Date.now() - 60 * 60_000).toISOString();
+  const { data, error } = await db
+    .from("callback_bookings")
+    .select("id,slot_start,slot_end,caller_timezone,conversation_id,escalation_id")
+    .eq("status", "booked")
+    .gte("slot_start", since)
+    .order("slot_start", { ascending: true })
+    .limit(100);
+  if (error || !data?.length) return [];
+
+  const ids = [...new Set(data.map((b) => b.conversation_id as string))];
+  const convs = await db.from("conversations").select("id,caller_name").in("id", ids);
+  const nameById = new Map((convs.data ?? []).map((c) => [c.id as string, (c.caller_name as string | null) ?? null]));
+
+  return data.map((b) => {
+    const slot = new Date(b.slot_start as string);
+    return {
+      ...b,
+      caller_name: nameById.get(b.conversation_id as string) ?? null,
+      // Support reads this, so it is in support's own hours. The caller's zone rides alongside
+      // so whoever rings knows what time it is where the phone is ringing.
+      reads_as: describeSlot(slot, SUPPORT_TIMEZONE),
+      caller_reads_as: describeSlot(slot, (b.caller_timezone as string | null) ?? null),
+    };
+  });
+}
 
 app.use(requireAuth, vapiRouter());
 
