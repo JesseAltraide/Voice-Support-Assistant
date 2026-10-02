@@ -112,6 +112,12 @@
          and addresses constantly, and an escalation sent to a misheard address reaches nobody. -->
     <section class="review" id="review" hidden aria-labelledby="review-heading">
       <h2 id="review-heading">Before this goes to a specialist</h2>
+
+      <!-- A time agreed out loud is the thing a caller most wants to see written down, and it
+           stands whether or not the call also raised an escalation. -->
+      <p class="callback" id="review-callback" hidden></p>
+
+      <div id="review-escalation">
       <p class="review-lede">Please check your name and email. Everything else was agreed on the call.</p>
 
       <label class="field" for="review-name">Your name</label>
@@ -126,6 +132,7 @@
 
       <button id="review-submit">Confirm and send</button>
       <p class="reason" id="review-status" role="alert" hidden></p>
+      </div>
     </section>
 
     <section class="transcript" id="transcript" hidden aria-live="polite"></section>
@@ -367,6 +374,22 @@ async function loadReview() {
     if (!res.ok) return;
     draft = await res.json();
   } catch {
+    return;
+  }
+
+  const callback = el("review-callback");
+  callback.hidden = !draft.callback;
+  callback.textContent = draft.callback ? `Callback booked for ${draft.callback.reads_as}.` : "";
+
+  // A call may book a callback without raising anything for a specialist. There is then nothing
+  // to confirm, so the contact form stays out of the way rather than asking for details no one
+  // is waiting on.
+  el("review-escalation").hidden = !draft.has_escalation;
+  el("review-heading").textContent = draft.has_escalation
+    ? "Before this goes to a specialist"
+    : "Your callback";
+  if (!draft.has_escalation) {
+    el("review").hidden = false;
     return;
   }
 

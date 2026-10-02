@@ -1,6 +1,8 @@
 import { timingSafeEqual } from "node:crypto";
 import { fileURLToPath } from "node:url";
 import express, { type NextFunction, type Request, type Response } from "express";
+import { describeSlot } from "../mcp/callback-slots.js";
+import { draftPayload } from "./draft.js";
 import { getDb, requireEnv } from "../shared/db.js";
 import { agentAuthToken, mcpAuthToken } from "./config.js";
 import { dispatchHandoffEmails } from "./handoff-email.js";
@@ -124,15 +126,38 @@ function rateLimitPublic(req: Request, res: Response, next: NextFunction): void 
  * Neither route reveals anything about a conversation that has no escalation, and the only
  * fields they return are the ones the caller gave us in the first place.
  */
-const callEscalation = async (callId: unknown) => {
+/** The conversation a Vapi call id belongs to, or null. Shared by everything keyed on a call. */
+const conversationForCall = async (callId: unknown) => {
   if (typeof callId !== "string" || !/^[0-9a-f-]{32,40}$/i.test(callId)) return null;
+  const conv = await getDb()
+    .from("conversations")
+    .select("id,caller_timezone")
+    .eq("vapi_call_id", callId)
+    .maybeSingle();
+  return conv.error || !conv.data ? null : conv.data;
+};
+
+/** The callback reserved on this call, read back in the caller's own timezone. */
+const callBooking = async (conv: { id: string; caller_timezone: string | null }) => {
+  const { data, error } = await getDb()
+    .from("callback_bookings")
+    .select("slot_start")
+    .eq("conversation_id", conv.id)
+    .eq("status", "booked")
+    .maybeSingle();
+  if (error || !data) return null;
+  const slotStart = new Date(data.slot_start as string);
+  return { slot_start: slotStart.toISOString(), reads_as: describeSlot(slotStart, conv.caller_timezone) };
+};
+
+const callEscalation = async (callId: unknown) => {
+  const conv = await conversationForCall(callId);
+  if (!conv) return null;
   const db = getDb();
-  const conv = await db.from("conversations").select("id").eq("vapi_call_id", callId).maybeSingle();
-  if (conv.error || !conv.data) return null;
   const esc = await db
     .from("escalations")
     .select("id,user_name,user_email,reason,case_reference,contact_confirmed_at,handoff_email_status")
-    .eq("conversation_id", conv.data.id as string)
+    .eq("conversation_id", conv.id as string)
     .in("status", ["open", "in progress"])
     .maybeSingle();
   return esc.error || !esc.data ? null : esc.data;
@@ -180,23 +205,19 @@ app.post("/call/details", rateLimitPublic, express.json({ limit: "4kb" }), async
 });
 
 app.get("/escalation/draft", rateLimitPublic, async (req, res) => {
-  const row = await callEscalation(req.query.call_id);
-  // The same answer whether the call is unknown or simply had no escalation: distinguishing
-  // them would say whether a given call id exists.
-  if (!row) {
+  const conv = await conversationForCall(req.query.call_id);
+  const [row, callback] = conv
+    ? await Promise.all([callEscalation(req.query.call_id), callBooking(conv)])
+    : [null, null];
+  // The same answer whether the call is unknown or simply had nothing to show: distinguishing
+  // them would say whether a given call id exists. A booking alone is worth showing, because a
+  // time agreed by voice is exactly the thing a caller wants to see written down.
+  if (!row && !callback) {
     res.status(404).json({ error: "no_escalation" });
     return;
   }
   res.setHeader("Cache-Control", "no-store");
-  res.json({
-    name: row.user_name,
-    email: row.user_email,
-    // Read-only on purpose. The wording was agreed aloud during the call; only the contact
-    // details are open to correction here.
-    reasons: String(row.reason ?? "").split("\n").filter(Boolean),
-    reference: row.case_reference,
-    confirmed: row.contact_confirmed_at !== null,
-  });
+  res.json(draftPayload(row, callback));
 });
 
 app.post("/escalation/confirm", rateLimitPublic, express.json({ limit: "4kb" }), async (req, res) => {
