@@ -29,6 +29,11 @@ export const MCP_TOOL_NAMES = [
   "create_escalation",
   "log_conversation_event",
   "search_knowledge",
+  // Missing until now. The tools were registered on the MCP server and tested there, but this
+  // list is what the agent is actually allowed to call — so every booking attempt failed and the
+  // agent, having no tool for the job, told callers the system was broken.
+  "check_callback_availability",
+  "book_callback",
 ] as const;
 
 export function mcpAuthToken(): string {

@@ -1,3 +1,4 @@
+import { MCP_TOOL_NAMES } from "../agent/config.js";
 import { randomUUID } from "node:crypto";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
@@ -25,6 +26,27 @@ async function call(name: string, args: Record<string, unknown>) {
   const res = await client.callTool({ name, arguments: args });
   const text = (res.content as Array<{ type: string; text: string }>)[0]?.text ?? "{}";
   return { isError: res.isError === true, body: JSON.parse(text) as Record<string, any> };
+}
+
+/**
+ * Verify this call against an account, the way a real call does.
+ *
+ * Lookups are scoped to the verified customer, so a test that skips this is testing what an
+ * unidentified stranger can read — which is now nothing.
+ */
+const OWNERS: Record<string, [string, string]> = {
+  "CUS-1001": ["lagosledger", "amara@lagosledger.example"],
+  "CUS-1002": ["nairobiops", "daniel@nairobiops.example"],
+  "CUS-1003": ["accrastack", "efua@accrastack.example"],
+  "CUS-1004": ["capecloud", "amina@capecloud.example"],
+  "CUS-1005": ["kigaliworks", "patrick@kigaliworks.example"],
+};
+
+/** Verify this call against an account, the way a real call must before any lookup. */
+async function verifyAs(customerId: string) {
+  const [company_name, email] = OWNERS[customerId]!;
+  const { body } = await call("lookup_customer", { company_name, email });
+  if (body.linked !== true) throw new Error(`test setup: could not verify as ${customerId}`);
 }
 
 async function counters() {
@@ -64,7 +86,9 @@ describe("tool registration", () => {
 });
 
 describe("lookup_transaction", () => {
+
   it("TXN-9001: returns a safe sentence, speaks the past date as 'was expected', withholds amount", async () => {
+    await verifyAs("CUS-1001");
     const { body } = await call("lookup_transaction", { transaction_id: "txn 9001" });
     expect(body.found).toBe(true);
     expect(body.support_summary).toContain("It was expected on August 19.");
@@ -73,6 +97,7 @@ describe("lookup_transaction", () => {
   });
 
   it("TXN-9004 asked for its arrival: reports it unavailable and points to a specialist (#62)", async () => {
+    await verifyAs("CUS-1004");
     const { body } = await call("lookup_transaction", { transaction_id: "TXN-9004", asked_about: ["estimated_arrival"] });
     expect(body.unavailable_fields).toEqual(["estimated_arrival"]);
     expect(body.next_step).toMatch(/offer_specialist_followup/);
@@ -80,6 +105,7 @@ describe("lookup_transaction", () => {
   });
 
   it("negative: TXN-9001 asked only for its status raises nothing (#62)", async () => {
+    await verifyAs("CUS-1001");
     const { body } = await call("lookup_transaction", { transaction_id: "TXN-9001", asked_about: ["summary"] });
     expect(body.unavailable_fields).toEqual([]);
     expect(body.next_step).toBe("give_summary");
@@ -87,12 +113,14 @@ describe("lookup_transaction", () => {
   });
 
   it("TXN-9003 (review required, no arrival date) says nothing about the date unprompted", async () => {
+    await verifyAs("CUS-1003");
     const { body } = await call("lookup_transaction", { transaction_id: "TXN-9003" });
     expect(body.support_summary).toMatch(/under review/i);
     expect(body.support_summary).not.toMatch(/arriv|expected|compliance|escalate/i);
   });
 
   it("negative: a transaction that does not exist is found:false, counted, and never guessed", async () => {
+    await verifyAs("CUS-1001");
     const { isError, body } = await call("lookup_transaction", { transaction_id: "TXN-0000" });
     expect(isError).toBe(false);
     expect(body.found).toBe(false);
@@ -101,6 +129,7 @@ describe("lookup_transaction", () => {
   });
 
   it("negative: injection-shaped input is a miss, not an error", async () => {
+    await verifyAs("CUS-1001");
     const { isError, body } = await call("lookup_transaction", { transaction_id: "TXN-9001'; drop table transactions;--" });
     expect(isError).toBe(false);
     expect(body.found).toBe(false);
@@ -108,7 +137,9 @@ describe("lookup_transaction", () => {
 });
 
 describe("lookup_payout", () => {
+
   it("PAY-7001 (no failure reason): a summary is still produced and nothing is invented", async () => {
+    await verifyAs("CUS-1001");
     const { body } = await call("lookup_payout", { payout_id: "PAY-7001" });
     expect(body.found).toBe(true);
     expect(body.support_summary).toMatch(/processing/i);
@@ -116,12 +147,14 @@ describe("lookup_payout", () => {
   });
 
   it("PAY-7001 asked for its failure reason: says none is recorded, does not flag unavailable", async () => {
+    await verifyAs("CUS-1001");
     const { body } = await call("lookup_payout", { payout_id: "PAY-7001", asked_about: ["failure_reason"] });
     expect(body.support_summary).toMatch(/no failure recorded/i);
     expect(body.unavailable_fields).toEqual([]);
   });
 
   it("PAY-7002: requires review, no compliance detail, no recipient or amount", async () => {
+    await verifyAs("CUS-1003");
     const { body } = await call("lookup_payout", { payout_id: "PAY-7002" });
     expect(body.support_summary).toMatch(/requires review/i);
     expect(body.next_step).toBe("give_summary_then_offer_specialist_followup");
@@ -129,16 +162,19 @@ describe("lookup_payout", () => {
   });
 
   it("PAY-7003 (failed): speaks the reviewed, customer-safe reason", async () => {
+    await verifyAs("CUS-1004");
     const { body } = await call("lookup_payout", { payout_id: "PAY-7003" });
     expect(body.support_summary).toMatch(/failed because beneficiary details need review/i);
   });
 
   it("negative: a payout with a conflicting transaction_id finds nothing", async () => {
+    await verifyAs("CUS-1001");
     const { body } = await call("lookup_payout", { payout_id: "PAY-7001", transaction_id: "TXN-9004" });
     expect(body.found).toBe(false);
   });
 
   it("negative: a transaction with no payout row (TXN-9002) is found:false, not an error", async () => {
+    await verifyAs("CUS-1002");
     const { isError, body } = await call("lookup_payout", { transaction_id: "TXN-9002" });
     expect(isError).toBe(false);
     expect(body.found).toBe(false);
@@ -270,14 +306,15 @@ describe("tickets, escalations and events", () => {
   });
 
   it("every call is logged by the wrapper, including the misses and refusals", async () => {
+    await verifyAs("CUS-1001");
     await call("lookup_transaction", { transaction_id: "TXN-9001" });
     await call("lookup_transaction", { transaction_id: "TXN-0000" });
     await call("search_knowledge", { query: "weather football recipe" });
     await call("create_escalation", { user_name: "X", user_email: "bad", category: "other", reason: "invalid contact details supplied" });
     const { data } = await db.from("tool_calls").select("tool_name,status,result_summary").eq("conversation_id", conversationId);
-    expect(data).toHaveLength(4);
+    expect(data).toHaveLength(5);
     expect(data?.every((r) => r.status === "ok")).toBe(true);
-    expect(data?.map((r) => r.tool_name).sort()).toEqual(["create_escalation", "lookup_transaction", "lookup_transaction", "search_knowledge"]);
+    expect(data?.map((r) => r.tool_name).sort()).toEqual(["create_escalation", "lookup_customer", "lookup_transaction", "lookup_transaction", "search_knowledge"]);
     expect(data?.find((r) => r.result_summary === "found=false")).toBeTruthy();
   });
 });
@@ -296,5 +333,71 @@ describe("closed conversations", () => {
     expect(data?.[0]?.status).toBe("error");
     expect(data?.[0]?.error_message).toMatch(/already ended/);
     await deadClient.close();
+  });
+});
+
+// The MCP server registering a tool is only half of it. The agent is given an explicit allowlist,
+// and a tool missing from that list cannot be called however well it is registered — which is
+// exactly what happened to the callback tools: booked nothing, and told callers the system was
+// broken, because the model had no tool for the job and said so.
+describe("the agent is allowed to call every tool that exists", () => {
+  it("the allowlist and the registered tools are the same set", async () => {
+    const { tools } = await client.listTools();
+    expect([...MCP_TOOL_NAMES].sort()).toEqual(tools.map((t) => t.name).sort());
+  });
+});
+
+// A reference is not a password. References are short, sequential, and printed on invoices that
+// get forwarded — so knowing one proves nothing about who is holding the phone. Until this, any
+// caller who said "TXN-9004" was told its status, type and summary.
+describe("a lookup is scoped to the caller's own account", () => {
+  it("an unverified caller is told nothing at all about a real reference", async () => {
+    const { body } = await call("lookup_transaction", { transaction_id: "TXN-9001" });
+    expect(body.found).toBe(false);
+    expect(body.needs_verification).toBe(true);
+    expect(body.support_summary).toBeNull();
+    expect(body.status).toBeNull();
+    // Nothing about the record, not even that there is one.
+    expect(JSON.stringify(body)).not.toMatch(/processing|expected|2400|USD/i);
+  });
+
+  it("the answer is the same for a reference that was never issued", async () => {
+    // Otherwise the difference between the two replies is itself the leak.
+    const real = await call("lookup_transaction", { transaction_id: "TXN-9001" });
+    const fake = await call("lookup_transaction", { transaction_id: "TXN-0000" });
+    expect(real.body).toEqual(fake.body);
+  });
+
+  it("a verified caller cannot read another customer's transaction", async () => {
+    await verifyAs("CUS-1001");
+    const { body } = await call("lookup_transaction", { transaction_id: "TXN-9004" });
+    expect(body.found).toBe(false);
+    expect(body.support_summary).toBeNull();
+    expect(JSON.stringify(body)).not.toMatch(/processing|expected/i);
+  });
+
+  it("a verified caller cannot read another customer's payout", async () => {
+    await verifyAs("CUS-1001");
+    const { body } = await call("lookup_payout", { payout_id: "PAY-7003" });
+    expect(body.found).toBe(false);
+    expect(body.support_summary).toBeNull();
+    expect(JSON.stringify(body)).not.toMatch(/beneficiary|failed because/i);
+  });
+
+  it("someone else's reference is indistinguishable from one that does not exist", async () => {
+    await verifyAs("CUS-1001");
+    const theirs = await call("lookup_transaction", { transaction_id: "TXN-9004" });
+    const nobodys = await call("lookup_transaction", { transaction_id: "TXN-0000" });
+    expect(theirs.body.found).toBe(nobodys.body.found);
+    expect(theirs.body.support_summary).toBe(nobodys.body.support_summary);
+  });
+
+  it("the caller's own records still read normally once verified", async () => {
+    await verifyAs("CUS-1001");
+    const txn = await call("lookup_transaction", { transaction_id: "TXN-9001" });
+    expect(txn.body.found).toBe(true);
+    expect(typeof txn.body.support_summary).toBe("string");
+    const pay = await call("lookup_payout", { payout_id: "PAY-7001" });
+    expect(pay.body.found).toBe(true);
   });
 });

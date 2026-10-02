@@ -62,6 +62,9 @@ describe("the failed-lookup limit is enforced, not advisory", () => {
   it("after 3 misses even a valid reference is refused without a query", async () => {
     const id = await newConversation();
     const client = await connect({ conversationId: id, turnId: null });
+    // Verified first: an unverified lookup is refused before any record is read, so it is not a
+    // failed lookup and must not spend the caller's budget of them.
+    await call(client, "lookup_customer", { company_name: "LagosLedger", email: "amara@lagosledger.example" });
     for (const ref of ["TXN-0001", "TXN-0002", "TXN-0003"]) {
       expect((await call(client, "lookup_transaction", { transaction_id: ref })).body.found).toBe(false);
     }
@@ -77,11 +80,12 @@ describe("the failed-lookup limit is enforced, not advisory", () => {
 describe("lookups do not echo identifiers or account status", () => {
   it("no customer_id from lookup_transaction, and no raw account state from lookup_customer", async () => {
     const client = await connect({ conversationId: await newConversation(), turnId: null });
+    // The account is matched first; a reference alone no longer opens a record.
+    const cust = await call(client, "lookup_customer", { company_name: "AccraStack", email: "efua@accrastack.example" });
     const txn = await call(client, "lookup_transaction", { transaction_id: "TXN-9003" });
     expect(txn.body.found).toBe(true);
     expect(txn.body.customer_id).toBeUndefined();
 
-    const cust = await call(client, "lookup_customer", { company_name: "AccraStack", email: "efua@accrastack.example" });
     expect(cust.body.found).toBe(true);
     // The tool spec defines customer_id, so it is returned; it is an internal identifier the
     // speech guard keeps unspoken, not a secret the tool has to withhold.

@@ -121,6 +121,38 @@ function customerSummary(accountStatus: string, kycStatus: string): { support_su
 const TXN_MISS = { transaction_id: null, type: null, status: null, support_summary: null, unavailable_fields: [] };
 const PAYOUT_MISS = { payout_id: null, status: null, support_summary: null, unavailable_fields: [] };
 
+/**
+ * The customer this call has been verified as, or null.
+ *
+ * A reference is not a password. Until lookup_customer has matched the caller against an account,
+ * knowing a reference proves nothing about who is holding the phone, and references are short,
+ * sequential and printed on invoices that get forwarded.
+ */
+async function verifiedCustomer(db: SupabaseClient, conversationId: string): Promise<string | null> {
+  const { data, error } = await db
+    .from("conversations")
+    .select("linked_customer_id")
+    .eq("id", conversationId)
+    .maybeSingle();
+  if (error) throw new Error(error.message);
+  return (data?.linked_customer_id as string | null) ?? null;
+}
+
+/**
+ * Returned before any record is read, so it is the same answer whether the reference exists, was
+ * never issued, or belongs to somebody else. Nothing about the record leaks to an unverified
+ * caller, including whether there is a record at all.
+ */
+const needsVerification = (shape: Record<string, unknown>): ToolOutcome => ({
+  result: {
+    ...shape,
+    found: false,
+    needs_verification: true,
+    next_step: "ask_for_the_company_name_or_the_email_on_the_account_then_call_lookup_customer",
+  },
+  summary: "refused: caller not verified against an account",
+});
+
 export function registerLookupTools(server: McpServer, db: SupabaseClient, ctx: ToolContext): void {
   server.registerTool(
     "lookup_customer",
@@ -234,13 +266,20 @@ export function registerLookupTools(server: McpServer, db: SupabaseClient, ctx: 
     async (args) =>
       runTool(db, ctx, "lookup_transaction", "answer a transaction status question", "transaction reference supplied", async (conversationId) => {
         if (await lookupsBlocked(db, conversationId)) return blockedOutcome(TXN_MISS);
+        // Checked before the reference is even parsed, so an unverified caller learns nothing.
+        const customerId = await verifiedCustomer(db, conversationId);
+        if (!customerId) return needsVerification(TXN_MISS);
+
         const id = normalizeId(args.transaction_id, "TXN");
         if (!id) return missOutcome(db, conversationId, TXN_MISS);
 
+        // Scoped to the caller's own account. Someone else's reference is simply not found, which
+        // is the same answer as a reference that never existed.
         const { data, error } = await db
           .from("transactions")
           .select("transaction_id,customer_id,transaction_type,amount,currency,status,estimated_arrival,support_summary")
           .eq("transaction_id", id)
+          .eq("customer_id", customerId)
           .maybeSingle();
         if (error) throw new Error(error.message);
         if (!data) return missOutcome(db, conversationId, TXN_MISS);
@@ -278,6 +317,10 @@ export function registerLookupTools(server: McpServer, db: SupabaseClient, ctx: 
     async (args) =>
       runTool(db, ctx, "lookup_payout", "answer a payout status question", "payout or transaction reference supplied", async (conversationId) => {
         if (await lookupsBlocked(db, conversationId)) return blockedOutcome(PAYOUT_MISS);
+        // Same rule as a transaction: a reference is not proof of who is holding the phone.
+        const customerId = await verifiedCustomer(db, conversationId);
+        if (!customerId) return needsVerification(PAYOUT_MISS);
+
         const payoutId = normalizeId(args.payout_id, "PAY");
         const txnId = normalizeId(args.transaction_id, "TXN");
         // A reference that was supplied but is malformed, or none at all, is a miss, not a wider search.
@@ -292,7 +335,9 @@ export function registerLookupTools(server: McpServer, db: SupabaseClient, ctx: 
           .select("payout_id,transaction_id,customer_id,recipient_name,amount,currency,status,scheduled_for,failure_reason")
           .order("scheduled_for", { ascending: false })
           .order("payout_id", { ascending: true })
-          .limit(1);
+          .limit(1)
+          // Scoped to the verified account, so another customer's payout is simply not found.
+          .eq("customer_id", customerId);
         if (payoutId) query = query.eq("payout_id", payoutId);
         if (txnId) query = query.eq("transaction_id", txnId);
         const { data, error } = await query;
