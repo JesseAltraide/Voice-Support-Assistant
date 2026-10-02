@@ -5,7 +5,7 @@ import { config } from "./config.js";
 import { extractFacts } from "./facts.js";
 import {
   checkReply, DIDNT_CATCH, RECOVERY_LIMIT, UNCLEAR_LIMIT, OFF_TOPIC_LIMIT, OFF_TOPIC_CLOSE, UNHEARD_CLOSE,
-  rephraseLine, ERROR_FALLBACK, ERROR_FALLBACK_UNLOGGED, ESCALATED_FALLBACK, NO_PROGRESS_CLOSE, RESOLVED_CLOSE,
+  guardRetryLine, rephraseLine, ERROR_FALLBACK, ERROR_FALLBACK_UNLOGGED, ESCALATED_FALLBACK, NO_PROGRESS_CLOSE, RESOLVED_CLOSE,
   OFF_TOPIC_LINE, SAFE_FALLBACK, STATE_YOUR_PROBLEM, STILL_DIDNT_CATCH, TOOLS_DOWN_FALLBACK,
 } from "./guard.js";
 import { classifyInput, isClosing, isRepeatQuestion } from "./caller-input.js";
@@ -402,7 +402,7 @@ async function runTurn(p: TurnRequest): Promise<TurnResult> {
     // An escalation logged earlier in the call counts too, so the caller is not offered one twice.
     // Before the limit, ask the same question again rather than reaching for a specialist.
     const giveUp = records.escalationExists || failedRecoveries + 1 >= RECOVERY_LIMIT;
-    spoken = giveUp ? fallbackFor(records.escalationExists) : rephraseLine(lastQuestion);
+    spoken = giveUp ? fallbackFor(records.escalationExists) : guardRetryLine(lastQuestion);
     answerType = records.escalationExists ? "escalate" : giveUp ? "decline" : "clarify";
     note = `speech guard: ${guard.reasons.join(",")}. ${said}`;
   }

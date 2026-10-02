@@ -1,5 +1,5 @@
-import { describe, expect, it } from "vitest";
-import { checkReply, type GuardInput } from "./guard.js";
+import { describe, expect, it, test } from "vitest";
+import { checkReply, DIDNT_CATCH, type GuardInput, guardRetryLine } from "./guard.js";
 
 const base = (over: Partial<GuardInput>): GuardInput => ({
   reply: "",
@@ -142,5 +142,64 @@ describe("reporting", () => {
     const r = checkReply(base({ reply: "Your account is restricted and I've booked a callback within 48 hours." }));
     expect(r.ok).toBe(false);
     expect(r.reasons.length).toBeGreaterThanOrEqual(2);
+  });
+});
+
+// All three were found in one real voice call. The caller said "My payments are currently stuck"
+// and "Yes, please. Thank you." — both transcribed perfectly — and heard "Sorry, I didn't catch
+// that." The guard had censored the agent's own reply, and the apology blamed the caller for it.
+describe("replies the guard wrongly refused on a real call", () => {
+  const speak = (reply: string, groundedTexts: string[] = []) =>
+    checkReply({
+      reply, callerTexts: [], groundedTexts, forbiddenNames: [],
+      records: { escalationExists: false, ticketExists: false },
+    });
+
+  test("the contact read-back the prompt itself instructs the agent to say", () => {
+    // The prompt mandates this sentence. The guard forbade it, so the escalation flow could not
+    // begin: a rule that contradicts the instructions is a rule that breaks every call.
+    expect(speak("Don't worry if I don't catch the spelling — you'll be able to check your name and email before this is sent.").ok).toBe(true);
+  });
+
+  test("an intention to log is not a claim that anything was logged", () => {
+    expect(speak("To get this logged, I'll need a few details.").ok).toBe(true);
+  });
+
+  test("ordinary English containing a number word is not a figure", () => {
+    // "one of them" became "1 of them", so a correct answer carrying no figure at all was
+    // rejected as an ungrounded number.
+    const grounded = ["Payments can be delayed by bank processing times, public holidays, compliance reviews, or issues with beneficiary details."];
+    expect(speak("Do you have a transaction or payout reference number for one of them?", grounded).ok).toBe(true);
+    expect(speak("One moment while I check that.").ok).toBe(true);
+  });
+
+  test("the real claims those three fixes must not have weakened", () => {
+    for (const reply of [
+      "I have logged this with the team.",
+      "Your callback is booked.",
+      "I have emailed you a confirmation.",
+      "Your payout will arrive in three business days.",
+      "A specialist will call you at nine am.",
+    ]) {
+      expect(speak(reply).ok, `should still be blocked: ${reply}`).toBe(false);
+    }
+  });
+});
+
+// A guard trip is our failure, not the caller's. Telling them they were misheard sends them to
+// repeat themselves, and the false apology enters the history the model reads — which is how one
+// censored reply turned every later "Yes." into "I didn't catch that".
+describe("what is said when the guard replaces a reply", () => {
+  test("never claims the caller was misheard", () => {
+    expect(guardRetryLine("What is your name?")).not.toMatch(/didn't (quite )?catch/i);
+    expect(guardRetryLine(null)).not.toMatch(/didn't (quite )?catch/i);
+  });
+
+  test("puts the question again so the call can carry on", () => {
+    expect(guardRetryLine("What is your name?")).toContain("What is your name?");
+  });
+
+  test("does not repeat one of our own apologies back", () => {
+    expect(guardRetryLine(DIDNT_CATCH)).not.toMatch(/didn't catch/i);
   });
 });

@@ -38,6 +38,22 @@ export const RECOVERY_LIMIT = 3;
  */
 export const isRepeatPrompt = (text: string): boolean => text.trimStart().startsWith("Sorry, I didn't");
 
+/**
+ * What to say when the guard replaced the agent's own words.
+ *
+ * Never an apology for mishearing. The caller was heard perfectly; it was the reply that was
+ * unsafe to speak. Saying "sorry, I didn't catch that" blames them for our problem, invites them
+ * to repeat themselves pointlessly, and — because the line goes into the conversation history —
+ * teaches the model that this caller cannot be understood. One guard trip then becomes a call
+ * that never recovers.
+ */
+export function guardRetryLine(lastQuestion: string | null): string {
+  const question = lastQuestion && !isRepeatPrompt(lastQuestion) ? lastQuestion : null;
+  return question
+    ? `Let me put that another way. ${question}`
+    : "Let me put that another way. Could you tell me a bit more about what you need?";
+}
+
 export function rephraseLine(lastQuestion: string | null): string {
   const opener = "Sorry, I didn't quite catch that.";
   // A repeat prompt is not a question worth repeating, so fall back to the plain ask.
@@ -133,6 +149,33 @@ const NUMBER_WORDS: Record<string, string> = {
 };
 const NUMBER_WORD_RE = new RegExp(`\\b(${Object.keys(NUMBER_WORDS).join("|")})\\b`, "g");
 
+/**
+ * Whether a spoken number word is being used as a figure, rather than as ordinary English.
+ *
+ * "One of them", "one moment", "for one thing" are not numbers, and turning them into "1" made
+ * the grounding rule reject replies that contained no figure at all — including a correct answer
+ * about payment delays, which the caller then heard as "sorry, I didn't catch that".
+ *
+ * It counts as a figure when it runs with other number words ("nine zero zero one"), follows a
+ * reference prefix, or is measured by what comes next ("nine am", "three days", "two thousand").
+ */
+const RUNS_WITH_NUMBER = new RegExp(`\\b(${Object.keys(NUMBER_WORDS).join("|")})\\b[\\s-]*$`, "i");
+const MEASURED_BY =
+  /^[\s-]*(am|pm|o'?clock|hundred|thousand|million|percent|%|days?|hours?|minutes?|weeks?|months?|years?|business|working|dollars?|euros?|pounds?|naira)\b/i;
+const REFERENCE_PREFIX = /\b(txn|pay|cus|reference|ref|number|code|id)\b[\s:-]*(?:\d[\s-]*)*$/i;
+
+function isFigure(text: string, index: number, word: string): boolean {
+  const before = text.slice(Math.max(0, index - 24), index);
+  const after = text.slice(index + word.length, index + word.length + 14);
+  return (
+    /\d[\s-]*$/.test(before) ||
+    RUNS_WITH_NUMBER.test(before) ||
+    REFERENCE_PREFIX.test(before) ||
+    MEASURED_BY.test(after) ||
+    new RegExp(`^[\\s-]*(${Object.keys(NUMBER_WORDS).join("|")})\\b`, "i").test(after)
+  );
+}
+
 export function normalise(text: string): string {
   const flat = text
     .normalize("NFKC")
@@ -140,7 +183,9 @@ export function normalise(text: string): string {
     .toLowerCase()
     .replace(/\s+at\s+/g, "@")
     .replace(/\s+dot\s+/g, ".")
-    .replace(NUMBER_WORD_RE, (w) => NUMBER_WORDS[w] ?? w)
+    .replace(NUMBER_WORD_RE, (w, _g, index: number, whole: string) =>
+      isFigure(whole, index, w) ? (NUMBER_WORDS[w] ?? w) : w,
+    )
     // Clause punctuation and apostrophes are kept: the negation rule needs clause boundaries,
     // and "I've booked" must stay recognisable as a commitment.
     .replace(/[^\p{L}\p{N}@._,;!?'-]+/gu, " ");
@@ -305,13 +350,25 @@ const NEGATION = /(\bnot\b|n't\b|\bcannot\b|\bcan not\b|\bunable\b|\bno\b|\bneve
  * A negation only excuses a commitment inside its own clause. "No problem, I've booked a
  * callback" is two clauses, and the promise in the second is not excused by the first.
  */
+/**
+ * Words that put what follows in the future, or in a purpose, rather than in the record.
+ *
+ * "You'll be able to check your name and email before this is sent" is not a claim that anything
+ * was sent — it is the opposite, and it is the sentence the prompt tells the agent to say. Same
+ * for "to get this logged, I'll need a few details": an intention, not a logged case. Without
+ * this, the guard censored the agent's own instructions and the caller was told, falsely, that
+ * they had been misheard.
+ */
+const NOT_YET = /\b(before|once|when|after|until|as soon as|to get|to have|so that|in order to)\b[^.]{0,30}$/;
+
 function unnegatedMatch(norm: string, pattern: RegExp): boolean {
   return norm
     .split(/[.!?,;]|\bbut\b|\band\b/)
     .some((clause) => {
       const m = clause.match(pattern);
       if (!m) return false;
-      return !NEGATION.test(clause.slice(0, m.index ?? 0));
+      const before = clause.slice(0, m.index ?? 0);
+      return !NEGATION.test(before) && !NOT_YET.test(before);
     });
 }
 
