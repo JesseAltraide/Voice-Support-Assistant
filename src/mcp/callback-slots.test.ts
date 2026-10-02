@@ -1,6 +1,6 @@
 import { describe, expect, test } from "vitest";
 import {
-  bookableSlots, describeSlot, REFUSAL_REASON, slotRefusal, slotRuleRefusal,
+  bookableSlots, describeSlot, describeWindow, REFUSAL_REASON, slotRefusal, slotRuleRefusal,
   HORIZON_DAYS, LEAD_TIME_MINUTES, SLOT_CAPACITY, SUPPORT_TIMEZONE,
 } from "./callback-slots.js";
 
@@ -122,5 +122,39 @@ describe("the reasons the agent is given", () => {
       expect(REFUSAL_REASON[r]).toBeTruthy();
       expect(REFUSAL_REASON[r].length).toBeGreaterThan(10);
     }
+  });
+});
+
+// The caller is told the window before being asked to pick, so they are not guessing. It is
+// derived from the same constants the rules use, so the sentence can never promise hours the
+// booking tool would refuse.
+describe("telling the caller the booking window", () => {
+  test("names the weekdays and support's own hours", () => {
+    const w = describeWindow(SUPPORT_TIMEZONE, NOW);
+    expect(w).toContain("Monday to Friday");
+    expect(w).toContain("08:00");
+    expect(w).toContain("17:00");
+  });
+
+  test("shifts into the caller's own time, because that is the time they will name", () => {
+    // Nairobi runs two hours ahead of Lagos, so support's 08:00 is their 10:00.
+    const w = describeWindow("Africa/Nairobi", NOW);
+    expect(w).toContain("10:00");
+    expect(w).toContain("19:00");
+  });
+
+  test("falls back to support's hours when the caller gave no zone", () => {
+    expect(describeWindow(null, NOW)).toContain("08:00");
+  });
+
+  test("an unknown zone does not break the sentence", () => {
+    expect(() => describeWindow("Not/AZone", NOW)).not.toThrow();
+    expect(describeWindow("Not/AZone", NOW)).toContain("08:00");
+  });
+
+  test("the hours quoted are hours the rules actually allow", () => {
+    // The sentence and the refusal must agree, or the agent promises what it cannot book.
+    const slots = bookableSlots(NOW);
+    for (const s of slots) expect(slotRuleRefusal(s, NOW)).toBeNull();
   });
 });

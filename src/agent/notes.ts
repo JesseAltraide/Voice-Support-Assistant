@@ -1,3 +1,4 @@
+import { describeWindow } from "../mcp/callback-slots.js";
 import { config } from "./config.js";
 
 export interface NoteInput {
@@ -50,10 +51,15 @@ export function buildNotes(i: NoteInput): NoteResult {
   // Without an anchor it would guess the date, and a guessed date is a slot in the wrong week.
   // The caller's own zone is named too: "ten" means ten where they are sitting.
   const zone = i.caller?.timezone?.trim();
+  const now = i.now ?? new Date();
   notes.push(
-    `Right now it is ${(i.now ?? new Date()).toISOString()}.` +
+    `Right now it is ${now.toISOString()}.` +
       (zone ? ` The caller's own timezone is ${zone}.` : "") +
-      " Work out any time the caller names in their own timezone, and pass it to a tool as a full ISO-8601 UTC instant.",
+      " Work out any time the caller names in their own timezone, and pass it to a tool as a full ISO-8601 UTC instant." +
+      // Said up front rather than discovered by refusal. A caller asked "when suits you?" with no
+      // hint of the window will name an evening or a Saturday, be turned down, and have to guess
+      // again — which is the opposite of being helped.
+      ` Callbacks can only be arranged ${describeWindow(zone ?? null, now)} in the caller's own time, on the hour or the half hour, from about an hour from now up to two weeks ahead. Say those days and hours in one short sentence when you offer a callback, before asking what suits them.`,
   );
 
   const [firstOffer, secondOffer] = config.unresolvedOfferAt;

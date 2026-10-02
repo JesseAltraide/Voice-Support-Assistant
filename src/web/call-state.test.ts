@@ -410,3 +410,32 @@ describe("the page never claims a state it is not in", () => {
     }
   });
 });
+
+// A caller who cannot start a second call has to reload the page, and on a support line that
+// reads as "it broke". Whatever route a call took to its end, the way back must be open.
+describe("after any ending, the caller can start again", () => {
+  const LIVE = [...CONNECTING, { type: "call-started" }];
+  const endings: Record<string, { type: string; message?: string }[]> = {
+    "caller pressed End": [...LIVE, { type: "end-clicked" }, { type: "call-ended" }],
+    "caller pressed End, never acknowledged": [...LIVE, { type: "end-clicked" }, { type: "end-timeout" }],
+    "assistant hung up": [...LIVE, { type: "call-ended" }],
+    "assistant hung up, transport errored first": [
+      ...LIVE, { type: "error", message: "Meeting has ended" }, { type: "call-ended" },
+    ],
+    "transport errored and nothing followed": [
+      ...LIVE, { type: "error", message: "Meeting has ended" }, { type: "close-timeout" },
+    ],
+    "the call never started": [...ASKING, { type: "start-failed", message: "Start method error" }],
+  };
+
+  for (const [label, events] of Object.entries(endings)) {
+    test(label, () => {
+      const state = run(events);
+      const v = view(state);
+      expect(
+        { phase: state.phase, visible: v.start.visible, enabled: v.start.enabled },
+        `stuck after: ${label}`,
+      ).toEqual({ phase: state.phase, visible: true, enabled: true });
+    });
+  }
+});

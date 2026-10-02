@@ -106,6 +106,36 @@ export function bookableSlots(now: Date): Date[] {
   return slots;
 }
 
+/** The instant that reads as a given hour, on a given day, in support's own zone. */
+function atSupportHour(day: Date, hour: number): Date {
+  const probe = new Date(Date.UTC(day.getUTCFullYear(), day.getUTCMonth(), day.getUTCDate(), 12, 0, 0, 0));
+  const here = partsIn(probe);
+  return new Date(probe.getTime() + (hour * 60 - (here.hour * 60 + here.minute)) * 60_000);
+}
+
+/**
+ * The booking window as the caller would hear it, in their own time.
+ *
+ * Support works Lagos hours, but a caller in London asked to pick a time should not have to do
+ * the arithmetic — or, worse, guess, propose something outside the window and be refused. The
+ * agent states this up front, and it is derived from the same constants the rules use, so the
+ * two can never drift apart.
+ */
+export function describeWindow(callerTimeZone: string | null, now: Date = new Date()): string {
+  // A weekday a few days out, so the offset quoted is one that will actually apply.
+  const day = new Date(now.getTime() + 3 * 24 * 60 * 60_000);
+  const time = (d: Date) => {
+    const fmt = (zone: string) =>
+      new Intl.DateTimeFormat("en-GB", { timeZone: zone, hour: "2-digit", minute: "2-digit", hourCycle: "h23" }).format(d);
+    try {
+      return fmt(callerTimeZone ?? SUPPORT_TIMEZONE);
+    } catch {
+      return fmt(SUPPORT_TIMEZONE);
+    }
+  };
+  return `Monday to Friday, ${time(atSupportHour(day, OPENS_HOUR))} to ${time(atSupportHour(day, CLOSES_HOUR))}`;
+}
+
 /** How the time reads to the caller, in their own zone, so it can be said back to them. */
 export function describeSlot(slotStart: Date, callerTimeZone: string | null): string {
   const format = (zone: string) =>

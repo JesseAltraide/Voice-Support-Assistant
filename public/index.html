@@ -234,7 +234,11 @@ function render() {
   el("dot").className = v.tone ? "dot " + v.tone : "dot";
 
   const inCall = !v.start.visible;
-  el("precall").hidden = inCall || state.phase === "ended" || state.phase === "lost" || state.phase === "failed";
+  // Hidden only while a call is running. It used to stay hidden once the call ended, which left
+  // a caller who wanted to ring back looking at an error and a Start button they could not use:
+  // the button is only enabled when the name and email are usable, and those fields were the
+  // very thing being hidden. The way back has to stay open.
+  el("precall").hidden = inCall;
   startBtn.hidden = !v.start.visible;
   // Enabled only when the machine allows a start AND the details are usable, so nobody
   // reaches the agent without the name and address that keep it from asking for them.
