@@ -29,9 +29,20 @@ export const CALL_END_MARKER = "Goodbye for now.";
  */
 export const RECOVERY_LIMIT = 3;
 
+/**
+ * Whether a line is one of our own asks-to-repeat.
+ *
+ * These end in a question mark, so anything hunting for "the last question the caller was asked"
+ * will happily pick one up and wrap it again: "Sorry, I didn't quite catch that. Sorry, I didn't
+ * catch that. Could you say that again?" The caller hears a stutter and learns nothing new.
+ */
+export const isRepeatPrompt = (text: string): boolean => text.trimStart().startsWith("Sorry, I didn't");
+
 export function rephraseLine(lastQuestion: string | null): string {
   const opener = "Sorry, I didn't quite catch that.";
-  return lastQuestion ? `${opener} ${lastQuestion}` : `${opener} Could you say that again?`;
+  // A repeat prompt is not a question worth repeating, so fall back to the plain ask.
+  const question = lastQuestion && !isRepeatPrompt(lastQuestion) ? lastQuestion : null;
+  return question ? `${opener} ${question}` : `${opener} Could you say that again?`;
 }
 
 /**

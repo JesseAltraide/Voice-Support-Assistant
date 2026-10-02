@@ -2,7 +2,7 @@ import { readFileSync } from "node:fs";
 import { describe, expect, test } from "vitest";
 import {
   DIDNT_CATCH, OFF_TOPIC_CLOSE, OFF_TOPIC_LIMIT, OFF_TOPIC_LINE, RECOVERY_LIMIT, STILL_DIDNT_CATCH,
-  UNCLEAR_LIMIT, UNHEARD_CLOSE,
+  rephraseLine, UNCLEAR_LIMIT, UNHEARD_CLOSE,
 } from "./guard.js";
 import { deriveAnswerType, MODEL_ANSWER_TYPES, parseTypedReply, type TurnFacts } from "./turn-type.js";
 
@@ -112,5 +112,30 @@ describe("how many times a caller is asked to repeat themselves", () => {
   test("both lines actually ask for something, rather than leaving silence", () => {
     expect(DIDNT_CATCH).toMatch(/\?/);
     expect(STILL_DIDNT_CATCH.length).toBeGreaterThan(20);
+  });
+});
+
+// Found by running a real conversation against the deployed server: the caller heard
+// "Sorry, I didn't quite catch that. Sorry, I didn't catch that. Could you say that again?"
+// lastQuestion is chosen as the most recent assistant line containing a question mark, and our
+// own ask-to-repeat ends in one, so it wrapped itself.
+describe("the ask-to-repeat never wraps itself", () => {
+  test.each([
+    DIDNT_CATCH,
+    "Sorry, I didn't quite catch that. Could you say that again?",
+    "Sorry, I didn't quite catch that. What is your payout reference?",
+  ])("does not stack another apology onto %j", (previous) => {
+    const line = rephraseLine(previous);
+    expect(line.match(/Sorry, I didn't/g) ?? []).toHaveLength(1);
+  });
+
+  test("a real question is still repeated, which is the whole point", () => {
+    expect(rephraseLine("What is your payout reference?")).toBe(
+      "Sorry, I didn't quite catch that. What is your payout reference?",
+    );
+  });
+
+  test("with nothing to repeat it still asks for something", () => {
+    expect(rephraseLine(null)).toContain("Could you say that again?");
   });
 });
