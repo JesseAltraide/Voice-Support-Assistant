@@ -209,6 +209,47 @@ describe("tickets and escalations per conversation are bounded and consistent", 
     expect(count).toBe(1);
   });
 
+  // One call can surface more than one problem. They gather onto the same escalation, so support
+  // receives a single handoff about a single caller rather than two cases they must correlate.
+  it("a second, different problem is appended to the open escalation instead of being lost", async () => {
+    const id = await newConversation();
+    const client = await connect({ conversationId: id, turnId: null });
+    const contact = { user_name: "Test Caller", user_email: "t@example.com" };
+    const first = await call(client, "create_escalation", { ...contact, category: "payment", reason: "An invoice payment failed and the caller cannot retry it." });
+    const second = await call(client, "create_escalation", { ...contact, category: "account", reason: "Their contractor payout to Kenya is also stuck in compliance review." });
+
+    // Still one escalation: the support team gets one handoff, not two.
+    expect(second.body.escalation_id).toBe(first.body.escalation_id);
+    const { count } = await db.from("escalations").select("*", { count: "exact", head: true }).eq("conversation_id", id);
+    expect(count).toBe(1);
+
+    const { data } = await db.from("escalations").select("reason,handoff_summary").eq("id", first.body.escalation_id as string).single();
+    const reason = data?.reason as string;
+    // Separated, not merely both present: the review screen splits on the newline, so an
+    // assertion that only checked for both substrings passed happily on one run-on line.
+    const issues = reason.split("\n");
+    expect(issues).toHaveLength(2);
+    expect(issues[0]).toMatch(/^Issue 1:/);
+    expect(issues[1]).toMatch(/^Issue 2:/);
+    expect(reason).toMatch(/invoice payment failed/i);
+    expect(reason).toMatch(/payout to Kenya/i);
+    // The brief support reads must carry the second problem too, not just the first.
+    expect(data?.handoff_summary as string).toMatch(/payout to Kenya/i);
+  });
+
+  it("the same problem restated is not appended twice", async () => {
+    const id = await newConversation();
+    const client = await connect({ conversationId: id, turnId: null });
+    const contact = { user_name: "Test Caller", user_email: "t@example.com" };
+    const reason = "An invoice payment failed and the caller cannot retry it.";
+    await call(client, "create_escalation", { ...contact, category: "payment", reason });
+    await call(client, "create_escalation", { ...contact, category: "payment", reason: "The invoice payment failed and they cannot retry it." });
+
+    const { data } = await db.from("escalations").select("reason").eq("conversation_id", id).single();
+    // A caller repeating themselves must not read to support as two separate complaints.
+    expect(data?.reason as string).not.toMatch(/Issue 2:/);
+  });
+
   it("two escalations fired at the same instant produce exactly one row", async () => {
     const id = await newConversation();
     const client = await connect({ conversationId: id, turnId: null });

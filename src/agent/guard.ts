@@ -224,7 +224,12 @@ const COMMITMENTS: RegExp[] = [
   // descriptions such as "RelayPay will show you the fees before you confirm".
   /(\b(will|gonna|going to|shall)|'ll)\s+(\w+\s+){0,2}(call you|contact you|reach out|email you|arrive|land|sorted|get back to you|be (credited|processed|resolved|sorted|completed|with you|there|done))\b/,
   /\b(i|we)('ve|'ll|\s+(have|will|am|are))?\s*(just\s+)?(booked|scheduled|arranged|emailed|notified|forwarded|sent|set up)\b/,
-  /\b(is|are|was|were|has been|have been)\s+(booked|scheduled|arranged|set up|notified|sent|emailed|confirmed)\b/,
+  /\b(is|are|was|were|has been|have been)\s+(booked|arranged|set up|notified|sent|emailed|confirmed)\b/,
+  // "scheduled" is handled separately because a payout genuinely has a scheduled date, and
+  // reading it back off the record is a fact, not a booking. It is a promise only when what was
+  // scheduled is a person or a call — the thing no scheduler in this system can actually arrange.
+  /\b(call|callback|call-back|someone|somebody|specialist|representative|agent|meeting|appointment)\b[^.]{0,40}\b(is|are|was|were|has been|have been)\s+scheduled\b/,
+  /\bscheduled\s+(a|an|the|your)\s+(call|callback|call-back|meeting|appointment)\b/,
   /\brest assured\b|\byou have my word\b|\bi assure you\b|\bi promise\b|\bmake sure it gets\b|\bdefinitely\b|\bfor sure\b/,
   /\b(specialist|team|representative|agent|someone)\b[^.]{0,40}\b(has|have|already)\b[^.]{0,20}\b(read|reviewed|seen|looked)\b/,
 ];

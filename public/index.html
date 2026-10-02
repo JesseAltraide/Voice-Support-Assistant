@@ -56,6 +56,20 @@
   .reason.error { color: var(--error); }
   .hint { margin-top: 20px; font-size: 13px; color: var(--muted); }
 
+  .review { margin-top: 28px; border-top: 1px solid var(--line); padding-top: 24px; }
+  .review h2 { margin: 0 0 6px; font-size: 17px; font-weight: 600; letter-spacing: -0.01em; }
+  .review-lede { margin: 0 0 20px; font-size: 14px; color: var(--muted); }
+  .field { display: block; margin: 0 0 6px; font-size: 12px; font-weight: 600; letter-spacing: 0.04em; text-transform: uppercase; color: var(--muted); }
+  .input {
+    width: 100%; padding: 10px 12px; margin-bottom: 18px; font: inherit; font-size: 15px;
+    color: var(--ink); background: var(--surface); border: 1px solid var(--line); border-radius: 7px;
+  }
+  .input:focus { outline: 2px solid var(--teal); outline-offset: 1px; border-color: var(--teal); }
+  .input.invalid { border-color: var(--error); }
+  /* Read-only on purpose: the wording was agreed aloud, only the contact details are editable. */
+  .issues { margin: 0 0 8px; padding: 0 0 0 18px; font-size: 14.5px; color: var(--ink); }
+  .issues li { margin-bottom: 8px; }
+  .issue-ref { margin: 0 0 20px; font-size: 13px; color: var(--muted); }
   .transcript { margin-top: 28px; border-top: 1px solid var(--line); padding-top: 20px; max-height: 260px; overflow-y: auto; }
   .line { margin-bottom: 14px; font-size: 14.5px; }
   .line .who { display: block; font-size: 12px; font-weight: 600; letter-spacing: 0.04em; text-transform: uppercase; color: var(--muted); margin-bottom: 3px; }
@@ -81,6 +95,26 @@
     <p class="reason" id="reason" role="alert" hidden></p>
     <p class="hint" id="hint">Your microphone is used only while the call is running.</p>
 
+    <!-- Shown after the call, only when an escalation was raised. Speech-to-text mishears names
+         and addresses constantly, and an escalation sent to a misheard address reaches nobody. -->
+    <section class="review" id="review" hidden aria-labelledby="review-heading">
+      <h2 id="review-heading">Before this goes to a specialist</h2>
+      <p class="review-lede">Please check your name and email. Everything else was agreed on the call.</p>
+
+      <label class="field" for="review-name">Your name</label>
+      <input class="input" id="review-name" type="text" autocomplete="name" maxlength="100" />
+
+      <label class="field" for="review-email">Your email</label>
+      <input class="input" id="review-email" type="email" autocomplete="email" maxlength="254" inputmode="email" />
+
+      <p class="field">What we're sending</p>
+      <ul class="issues" id="review-issues"></ul>
+      <p class="issue-ref" id="review-reference" hidden></p>
+
+      <button id="review-submit">Confirm and send</button>
+      <p class="reason" id="review-status" role="alert" hidden></p>
+    </section>
+
     <section class="transcript" id="transcript" hidden aria-live="polite"></section>
   </div>
 </main>
@@ -89,7 +123,7 @@
 // Pinned exactly, not to the @2 range. This script shares an origin with the microphone
 // permission and the public key, so it should not silently become a different build.
 import Vapi from "https://esm.sh/@vapi-ai/web@2.7.1";
-import { initialState, reduce, view, END_TIMEOUT_MS } from "./call-state.js";
+import { initialState, reduce, view, END_TIMEOUT_MS, CLOSE_GRACE_MS } from "./call-state.js";
 
 const el = (id) => document.getElementById(id);
 const startBtn = el("start");
@@ -102,6 +136,7 @@ let state = initialState();
 let vapi = null;
 let config = null;
 let endTimer = null;
+let closeTimer = null;
 
 /**
  * The page holds no state of its own. Every event goes through the machine in call-state.js,
@@ -113,6 +148,7 @@ function dispatch(event) {
   state = step.state;
   for (const effect of step.effects) perform(effect);
   render();
+  maybeShowReview();
 }
 
 function perform(effect) {
@@ -136,9 +172,22 @@ function perform(effect) {
     endTimer = null;
     return;
   }
+  if (effect === "arm-close-timer") {
+    clearTimeout(closeTimer);
+    closeTimer = setTimeout(() => dispatch({ type: "close-timeout" }), CLOSE_GRACE_MS);
+    return;
+  }
+  if (effect === "cancel-close-timer") {
+    clearTimeout(closeTimer);
+    closeTimer = null;
+    return;
+  }
   if (effect === "clear-transcript") {
     transcript.replaceChildren();
     transcript.hidden = true;
+    el("review").hidden = true;
+    reviewRequested = false;
+    reviewStatus("");
   }
 }
 
@@ -220,15 +269,122 @@ async function microphoneRefusal() {
   }
 }
 
+/**
+ * The SDK's errors carry `type`, `error` and `stage` — not the `errorMsg` this page used to
+ * read, which is why every failure said the same thing. A caller is told something specific
+ * when there is something specific to say, and the generic line only when there is not.
+ */
+function errorMessage(err) {
+  if (!err) return "The call could not continue.";
+  if (typeof err === "string") return err;
+  const candidates = [err.errorMsg, err.error?.message, err.error, err.message, err.type];
+  const found = candidates.find((c) => typeof c === "string" && c.trim());
+  return found ? found.trim() : "The call could not continue.";
+}
+
+/**
+ * The end-of-call check on the caller's own details.
+ *
+ * It appears once the call is over — never during it, so nobody is typing while a live line
+ * sits idle — and only when an escalation was actually raised. It shows on a lost connection
+ * too: someone whose line dropped mid-escalation is exactly the caller most likely to have
+ * been misheard.
+ */
+const EMAIL_RE = /^[^@\s]+@[^@\s]+\.[^@\s]+$/;
+let callId = null;
+let reviewRequested = false;
+
+function reviewStatus(text, isError) {
+  const node = el("review-status");
+  node.hidden = !text;
+  node.className = isError ? "reason error" : "reason";
+  node.textContent = text ?? "";
+}
+
+async function loadReview() {
+  let draft;
+  try {
+    const res = await fetch(`/escalation/draft?call_id=${encodeURIComponent(callId)}`);
+    // 404 is the ordinary case: most calls raise no escalation and need no form.
+    if (!res.ok) return;
+    draft = await res.json();
+  } catch {
+    return;
+  }
+
+  el("review-name").value = draft.name ?? "";
+  el("review-email").value = draft.email ?? "";
+  const list = el("review-issues");
+  list.replaceChildren();
+  for (const issue of draft.reasons ?? []) {
+    const li = document.createElement("li");
+    li.textContent = issue;
+    list.append(li);
+  }
+  const ref = el("review-reference");
+  ref.hidden = !draft.reference;
+  ref.textContent = draft.reference ? `Reference: ${draft.reference}` : "";
+
+  if (draft.confirmed) {
+    reviewStatus("You have already confirmed these details.", false);
+    el("review-submit").disabled = true;
+  }
+  el("review").hidden = false;
+}
+
+/** Shown once the call is over, and only once. */
+function maybeShowReview() {
+  const over = state.phase === "ended" || state.phase === "lost" || state.phase === "failed";
+  if (!over || !callId || reviewRequested) return;
+  reviewRequested = true;
+  void loadReview();
+}
+
+el("review-submit").addEventListener("click", async () => {
+  const nameInput = el("review-name");
+  const emailInput = el("review-email");
+  const name = nameInput.value.trim();
+  const email = emailInput.value.trim();
+
+  // Checked here so the caller is told immediately, and again on the server, which is what
+  // actually decides: this page is not the only thing that can post to that route.
+  nameInput.classList.toggle("invalid", name.length < 2);
+  emailInput.classList.toggle("invalid", !EMAIL_RE.test(email));
+  if (name.length < 2) return reviewStatus("Please enter your name.", true);
+  if (!EMAIL_RE.test(email)) return reviewStatus("That does not look like an email address.", true);
+
+  el("review-submit").disabled = true;
+  reviewStatus("Sending…", false);
+  try {
+    const res = await fetch("/escalation/confirm", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ call_id: callId, name, email }),
+    });
+    if (res.ok) {
+      reviewStatus("Thank you. This is on its way to a specialist.", false);
+      nameInput.disabled = true;
+      emailInput.disabled = true;
+      return;
+    }
+    if (res.status === 409) {
+      reviewStatus("This has already been sent to a specialist, so these details can no longer be changed.", false);
+      return;
+    }
+    el("review-submit").disabled = false;
+    reviewStatus(res.status === 400 ? "Please check your name and email." : "That could not be saved. Please try again.", true);
+  } catch {
+    el("review-submit").disabled = false;
+    reviewStatus("That could not be saved. Please check your connection and try again.", true);
+  }
+});
+
 function attach(instance) {
   instance.on("call-start", () => dispatch({ type: "call-started" }));
   instance.on("speech-start", () => dispatch({ type: "speech-started" }));
   instance.on("speech-end", () => dispatch({ type: "speech-ended" }));
   instance.on("call-end", () => dispatch({ type: "call-ended" }));
-  instance.on("error", (err) => {
-    const message = err && typeof err.errorMsg === "string" ? err.errorMsg : "The call could not continue.";
-    dispatch({ type: "error", message });
-  });
+  instance.on("error", (err) => dispatch({ type: "error", message: errorMessage(err) }));
   instance.on("message", (msg) => {
     const isFinal = msg && msg.type === "transcript" && msg.transcriptType === "final";
     if (!isFinal || typeof msg.transcript !== "string" || !msg.transcript.trim()) return;
@@ -268,7 +424,8 @@ startBtn.addEventListener("click", async () => {
       vapi = new Vapi(config.publicKey);
       attach(vapi);
     }
-    await vapi.start(config.assistantId);
+    const call = await vapi.start(config.assistantId);
+    callId = call?.id ?? callId;
   } catch (err) {
     dispatch({ type: "start-failed", message: err && err.message ? err.message : "Something went wrong starting the call." });
   }

@@ -121,12 +121,53 @@ async function createTicketRecord(
   return { ticket_id: data.id as string, status: data.status as string, deduplicated: false };
 }
 
-async function findOpenEscalation(db: SupabaseClient, conversationId: string): Promise<{ id: string; ticket_id: string | null } | null> {
+interface OpenEscalation {
+  id: string;
+  ticket_id: string | null;
+  reason: string;
+  case_reference: string | null;
+}
+
+async function findOpenEscalation(db: SupabaseClient, conversationId: string): Promise<OpenEscalation | null> {
   const { data, error } = await db
-    .from("escalations").select("id,ticket_id")
+    .from("escalations").select("id,ticket_id,reason,case_reference")
     .eq("conversation_id", conversationId).in("status", ["open", "in progress"]).maybeSingle();
   if (error) throw new Error(error.message);
-  return data ? { id: data.id as string, ticket_id: (data.ticket_id as string | null) ?? null } : null;
+  return data
+    ? {
+        id: data.id as string,
+        ticket_id: (data.ticket_id as string | null) ?? null,
+        reason: (data.reason as string | null) ?? "",
+        case_reference: (data.case_reference as string | null) ?? null,
+      }
+    : null;
+}
+
+/** Words too common to tell two problems apart. */
+const REASON_STOPWORDS = new Set([
+  "the", "a", "an", "and", "or", "but", "to", "of", "in", "on", "for", "with", "from", "is", "was",
+  "are", "were", "has", "have", "had", "their", "they", "it", "its", "this", "that", "caller",
+  "customer", "needs", "wants", "about", "not", "cannot", "can", "be", "been", "by", "at",
+]);
+
+const reasonWords = (s: string) =>
+  new Set(
+    s.toLowerCase().replace(/[^\p{L}\p{N}\s]+/gu, " ").split(/\s+/).filter((w) => w.length > 2 && !REASON_STOPWORDS.has(w)),
+  );
+
+/**
+ * Whether a second reason is the same problem restated rather than a new one.
+ *
+ * A caller repeats themselves, and an escalation listing one complaint three times wastes the
+ * attention of the person reading it. A genuinely separate problem shares few content words with
+ * the first, so overlap decides it.
+ */
+function sameProblem(existing: string, incoming: string): boolean {
+  const a = reasonWords(existing);
+  const b = reasonWords(incoming);
+  if (b.size === 0) return true;
+  const shared = [...b].filter((w) => a.has(w)).length;
+  return shared / b.size >= 0.6;
 }
 
 /** Idempotent, and also run on the repeat path so a missed status update is repaired. */
@@ -188,14 +229,37 @@ async function runEscalation(db: SupabaseClient, conversationId: string, args: E
     };
   }
 
+  const reason = clean(args.reason, 500);
   const conv = await openConversation(db, conversationId);
   const existing = await findOpenEscalation(db, conv.id);
   if (existing) {
     await markEscalated(db, conv.id);
+    // One call can surface more than one problem. They are gathered onto the same escalation so
+    // the support team receives a single handoff about a single caller, rather than separate
+    // cases they must work out are the same conversation. A repeat of the same problem is not
+    // appended: a caller restating themselves should not read as two complaints.
+    if (sameProblem(existing.reason, reason)) {
+      return escalationOutcome(existing.id, existing.ticket_id, true);
+    }
+    // Each issue is cleaned on its own and the separator added afterwards. Running the joined
+    // text through `clean` would strip the newlines with every other control character, leaving
+    // support — and the caller's own review screen — one run-on paragraph instead of a list.
+    const previous = existing.reason
+      .split("\n")
+      .map((line) => line.trim())
+      .filter(Boolean)
+      .map((line, i) => (/^Issue \d+:/.test(line) ? line : `Issue ${i + 1}: ${line}`));
+    const merged = [...previous, `Issue ${previous.length + 1}: ${reason}`].join("\n").slice(0, 2000);
+    const reference = existing.case_reference ?? (args.case_reference ? clean(args.case_reference, 64) || null : null);
+    const { error: appendError } = await db
+      .from("escalations")
+      .update({ reason: merged, case_reference: reference, handoff_summary: await loadBrief(db, conv.id, merged, reference) })
+      .eq("id", existing.id);
+    if (appendError) throw new Error(appendError.message);
+    await addEvent(db, conv.id, "state_change", "a further problem was added to the open escalation", { escalation_id: existing.id });
     return escalationOutcome(existing.id, existing.ticket_id, true);
   }
 
-  const reason = clean(args.reason, 500);
   // Absent and blank are the same thing here: the caller had nothing to give, and the brief
   // says so explicitly rather than leaving a support agent to wonder.
   const caseReference = args.case_reference ? clean(args.case_reference, 64) || null : null;

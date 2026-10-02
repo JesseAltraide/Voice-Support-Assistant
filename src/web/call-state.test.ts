@@ -1,7 +1,7 @@
 import { describe, expect, test } from "vitest";
 // The machine ships to the browser as plain JS with no build step, so the test reaches
 // across into public/. Nothing else in public/ is imported here: the module is DOM-free.
-import { initialState, reduce, view, END_TIMEOUT_MS } from "../../public/call-state.js";
+import { initialState, reduce, view, END_TIMEOUT_MS, CLOSE_GRACE_MS } from "../../public/call-state.js";
 
 /** Drive the machine through a list of events and return the final state. */
 function run(events: { type: string; message?: string }[]) {
@@ -179,7 +179,8 @@ describe("H1 — an error must stop the call, not just relabel the page", () => 
     const live = run(LIVE_CALL);
     const step = reduce(live, { type: "error", message: "network gone" });
     expect(step.effects).toContain("stop-call");
-    expect(step.state.phase).toBe("lost");
+    // The verdict waits, but the call is stopped at once either way.
+    expect(step.state.phase).toBe("closing");
   });
 
   test("an error while connecting also stops the call, since it may be half open", () => {
@@ -202,14 +203,14 @@ describe("H1 — an error must stop the call, not just relabel the page", () => 
   });
 
   test("the error message is shown to the caller", () => {
-    const v = view(run([...LIVE_CALL, { type: "error", message: "network gone" }]));
+    const v = view(run([...LIVE_CALL, { type: "error", message: "network gone" }, { type: "close-timeout" }]));
     expect(v.status).toBe("Connection lost");
     expect(v.reason).toBe("network gone");
     expect(v.reasonTone).toBe("error");
   });
 
   test("speech events after a lost call cannot resurrect the live status", () => {
-    const lost = run([...LIVE_CALL, { type: "error" }, { type: "speech-started" }]);
+    const lost = run([...LIVE_CALL, { type: "error" }, { type: "close-timeout" }, { type: "speech-started" }]);
     expect(view(lost).status).toBe("Connection lost");
   });
 });
@@ -235,8 +236,8 @@ describe("H1 — a second call cannot be stacked on a running one", () => {
   });
 
   test("starting again is allowed only once the call is really over", () => {
-    for (const closing of [{ type: "call-ended" }, { type: "error" }]) {
-      const closed = run([...LIVE_CALL, closing]);
+    for (const ending of [[{ type: "call-ended" }], [{ type: "error" }, { type: "close-timeout" }]]) {
+      const closed = run([...LIVE_CALL, ...ending]);
       expect(reduce(closed, { type: "start-clicked" }).state.phase).toBe("requesting-microphone");
     }
   });
@@ -275,7 +276,7 @@ describe("H2 — ending always resolves", () => {
     const ending = run([...LIVE_CALL, { type: "end-clicked" }]);
     const step = reduce(ending, { type: "error", message: "socket closed" });
     expect(step.effects).toEqual(expect.arrayContaining(["stop-call", "cancel-end-timer"]));
-    expect(step.state.phase).toBe("lost");
+    expect(step.state.phase).toBe("closing");
   });
 
   test("a late acknowledgement after the timeout changes nothing", () => {
@@ -291,6 +292,80 @@ describe("H2 — ending always resolves", () => {
 
   test("the timeout is short enough to be a recovery, not a wait", () => {
     expect(END_TIMEOUT_MS).toBeLessThanOrEqual(5000);
+  });
+});
+
+// A call ending and a call breaking look identical at the instant the transport reports an
+// error: Vapi hangs up remotely when the assistant says its closing phrase, and the error
+// arrives before the call-end that explains it. Everything read as "Connection lost".
+describe("a call that ended is not a call that broke", () => {
+  test("an error does not announce a lost connection straight away", () => {
+    const step = reduce(run(LIVE_CALL), { type: "error", message: "daily-error" });
+    expect(step.state.phase).toBe("closing");
+    expect(view(step.state).status).toBe("Ending");
+    // The call is still stopped immediately; only the verdict waits.
+    expect(step.effects).toEqual(expect.arrayContaining(["stop-call", "arm-close-timer"]));
+  });
+
+  test("a call-end arriving behind the error means the call simply ended", () => {
+    const closing = run([...LIVE_CALL, { type: "error", message: "daily-error" }]);
+    const step = reduce(closing, { type: "call-ended" });
+    expect(view(step.state).status).toBe("Call ended");
+    expect(view(step.state).tone).toBeNull();
+    expect(step.effects).toContain("cancel-close-timer");
+  });
+
+  test("no call-end means the line really was lost, and the reason is shown", () => {
+    const closing = run([...LIVE_CALL, { type: "error", message: "network gone" }]);
+    const lost = reduce(closing, { type: "close-timeout" }).state;
+    expect(view(lost).status).toBe("Connection lost");
+    expect(view(lost).tone).toBe("error");
+    expect(view(lost).reason).toBe("network gone");
+  });
+
+  test("a second error while closing does not restart the wait", () => {
+    const closing = run([...LIVE_CALL, { type: "error", message: "first" }]);
+    const step = reduce(closing, { type: "error", message: "second" });
+    expect(step.state).toEqual(closing);
+    expect(step.effects).toEqual([]);
+  });
+
+  test("the caller is never stranded while the verdict is pending", () => {
+    const v = view(run([...LIVE_CALL, { type: "error" }]));
+    expect(v.start.visible || v.end.visible).toBe(true);
+  });
+
+  test("the wait is short enough to feel like the call finishing", () => {
+    expect(CLOSE_GRACE_MS).toBeLessThanOrEqual(4000);
+  });
+
+  // Pressing End and then seeing the transport fail is still the caller ending their own call.
+  test("a hang-up the caller asked for is never reported as a lost line", () => {
+    const afterEnd = run([...LIVE_CALL, { type: "end-clicked" }, { type: "error", message: "socket closed" }]);
+    const resolved = reduce(afterEnd, { type: "close-timeout" }).state;
+    expect(view(resolved).status).toBe("Call ended");
+    expect(view(resolved).tone).toBeNull();
+    expect(view(resolved).reason).toBe("");
+  });
+
+  test("an error with no hang-up behind it still reports the line as lost", () => {
+    const resolved = run([...LIVE_CALL, { type: "error", message: "network gone" }, { type: "close-timeout" }]);
+    expect(view(resolved).status).toBe("Connection lost");
+  });
+
+  test("a later call does not inherit the previous one's hang-up", () => {
+    const again = run([
+      ...LIVE_CALL,
+      { type: "end-clicked" },
+      { type: "error" },
+      { type: "close-timeout" },
+      { type: "start-clicked" },
+      { type: "microphone-granted" },
+      { type: "call-started" },
+      { type: "error", message: "network gone" },
+      { type: "close-timeout" },
+    ]);
+    expect(view(again).status).toBe("Connection lost");
   });
 });
 

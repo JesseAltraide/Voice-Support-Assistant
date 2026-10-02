@@ -19,10 +19,20 @@
 export const END_TIMEOUT_MS = 4000;
 
 /**
- * @typedef {"startup"|"unavailable"|"blocked"|"idle"|"requesting-microphone"|"connecting"|"live"|"ending"|"ended"|"lost"|"failed"} Phase
+ * How long an error waits to see whether the call was simply ending.
+ *
+ * The transport reports an error when the call is torn down remotely — which is exactly what
+ * happens when the assistant says its closing phrase and Vapi hangs up — and that error arrives
+ * BEFORE the call-end that explains it. Treating it as fatal the moment it lands is why every
+ * normal goodbye was being reported to the caller as a lost connection.
+ */
+export const CLOSE_GRACE_MS = 2500;
+
+/**
+ * @typedef {"startup"|"unavailable"|"blocked"|"idle"|"requesting-microphone"|"connecting"|"live"|"ending"|"closing"|"ended"|"lost"|"failed"} Phase
  * @typedef {"listening"|"thinking"|"speaking"} Activity
- * @typedef {{ phase: Phase, activity: Activity, message: string }} State
- * @typedef {"stop-call"|"arm-end-timer"|"cancel-end-timer"|"clear-transcript"} Effect
+ * @typedef {{ phase: Phase, activity: Activity, message: string, closedByCaller?: boolean }} State
+ * @typedef {"stop-call"|"arm-end-timer"|"cancel-end-timer"|"arm-close-timer"|"cancel-close-timer"|"clear-transcript"} Effect
  * @typedef {{ state: State, effects: Effect[] }} Step
  */
 
@@ -34,7 +44,7 @@ const CALL_MAY_BE_RUNNING = new Set(["connecting", "live", "ending"]);
 
 /** @returns {State} */
 export function initialState() {
-  return { phase: "startup", activity: "listening", message: "" };
+  return { phase: "startup", activity: "listening", message: "", closedByCaller: false };
 }
 
 /**
@@ -45,7 +55,7 @@ export function initialState() {
 export function reduce(state, event) {
   const stay = { state, effects: [] };
   const to = (phase, patch = {}, effects = []) => ({
-    state: { phase, activity: "listening", message: "", ...patch },
+    state: { phase, activity: "listening", message: "", closedByCaller: false, ...patch },
     effects,
   });
 
@@ -96,8 +106,18 @@ export function reduce(state, event) {
       return state.phase === "live" ? to("ending", {}, ["arm-end-timer"]) : stay;
 
     case "call-ended":
+      // Arriving while closing is the answer the grace was waiting for: the error was a call
+      // ending, not a call breaking.
+      if (state.phase === "closing") return to("ended", {}, ["cancel-close-timer"]);
       if (!CALL_MAY_BE_RUNNING.has(state.phase)) return stay;
       return to("ended", {}, state.phase === "ending" ? ["cancel-end-timer"] : []);
+
+    case "close-timeout":
+      // No call-end followed. If the caller asked to hang up, that is still the call ending,
+      // however untidily the transport reported it; telling them the line dropped would blame
+      // the network for something they chose.
+      if (state.phase !== "closing") return stay;
+      return state.closedByCaller ? to("ended") : to("lost", { message: state.message });
 
     case "end-timeout":
       // The stop was requested and never acknowledged. Reset anyway rather than leave the
@@ -105,12 +125,14 @@ export function reduce(state, event) {
       return state.phase === "ending" ? to("ended") : stay;
 
     case "error": {
+      if (state.phase === "closing") return stay;
       if (!CALL_MAY_BE_RUNNING.has(state.phase)) return stay;
-      // The other half of H1. The call is not known to be over just because an error was
-      // reported, so stop it explicitly instead of inferring that it stopped.
-      const effects = ["stop-call"];
+      // The call is not known to be over just because an error was reported, so stop it
+      // explicitly instead of inferring that it stopped. Whether the caller is told the line
+      // dropped waits for the grace below: a remote hang-up looks identical at this instant.
+      const effects = ["stop-call", "arm-close-timer"];
       if (state.phase === "ending") effects.push("cancel-end-timer");
-      return to("lost", { message: event.message ?? "" }, effects);
+      return to("closing", { message: event.message ?? "", closedByCaller: state.phase === "ending" }, effects);
     }
 
     case "start-failed":
@@ -130,6 +152,7 @@ const STATUS = {
   "requesting-microphone": "Waiting for microphone access",
   connecting: "Connecting",
   ending: "Ending",
+  closing: "Ending",
   ended: "Call ended",
   lost: "Connection lost",
   failed: "Could not start the call",
@@ -149,7 +172,9 @@ const START_LABEL = { connecting: "Connecting", ended: "Start another call", los
  */
 export function view(state) {
   const { phase, activity, message } = state;
-  const inCall = phase === "live" || phase === "ending";
+  // "closing" shows the same controls as "ending": the caller is told the call is
+  // finishing, not that it broke, until the grace decides which it was.
+  const inCall = phase === "live" || phase === "ending" || phase === "closing";
 
   return {
     status: phase === "live" ? ACTIVITY[activity] : STATUS[phase],

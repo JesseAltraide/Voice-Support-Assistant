@@ -18,6 +18,16 @@ const MAX_ATTEMPTS = 5;
 const CLAIM_STALE_MS = 10 * 60_000;
 /** Bounded so one sweep cannot run long enough to overlap the next. */
 const BATCH = 10;
+/**
+ * How long an unconfirmed escalation waits for the caller to check their name and email before
+ * it is sent anyway.
+ *
+ * It is a delay, never a cancellation. A caller on a phone never sees the form, and a caller on
+ * the web can close the tab; the support team must still receive the handoff the caller was
+ * told about. A misspelt name is a smaller failure than a lost escalation.
+ */
+export const CONFIRM_GRACE_MS = 10 * 60_000;
+
 /** First wait after a failure; each subsequent attempt doubles it. */
 const BACKOFF_BASE_MS = 2 * 60_000;
 /** Ceiling on a single wait, so a long outage is still retried at a sensible rate. */
@@ -61,6 +71,9 @@ export interface EscalationRow {
   handoff_email_attempts: number;
   /** Part of the claim condition, so reclaiming a stale row is exclusive too. Null until claimed. */
   handoff_email_claimed_at?: string | null;
+  /** When the caller checked their name and email. Null holds delivery until the grace expires. */
+  contact_confirmed_at?: string | null;
+  created_at?: string | null;
 }
 
 const EMAIL = /^[^@\s]+@[^@\s]+\.[^@\s]+$/;
@@ -91,7 +104,22 @@ interface SmtpConfig {
  * count, which SQL filters cannot express without another column. The batch is small, so the
  * cost is a few rows read and skipped.
  */
-export function isDue(row: Pick<EscalationRow, "handoff_email_status" | "handoff_email_attempts" | "handoff_email_claimed_at">, now: number): boolean {
+export function isDue(
+  row: Pick<
+    EscalationRow,
+    "handoff_email_status" | "handoff_email_attempts" | "handoff_email_claimed_at" | "contact_confirmed_at" | "created_at"
+  >,
+  now: number,
+): boolean {
+  // Nothing goes out while the caller still has time to correct a misheard name or address.
+  // Once the grace has passed they are not coming back, and the handoff matters more than the
+  // spelling, so it is released rather than held for ever.
+  if (!row.contact_confirmed_at) {
+    const createdAt = row.created_at ? Date.parse(row.created_at) : null;
+    const waited = createdAt !== null && !Number.isNaN(createdAt) ? now - createdAt : Infinity;
+    if (waited < CONFIRM_GRACE_MS) return false;
+  }
+
   const claimedAt = row.handoff_email_claimed_at ? Date.parse(row.handoff_email_claimed_at) : null;
 
   // Never claimed: nothing has been tried, so it is due regardless of status. A "sending" row
@@ -194,7 +222,9 @@ export async function dispatchHandoffEmails(
   // place, at the cost of a few rows per sweep.
   const { data, error } = await db
     .from("escalations")
-    .select("id,conversation_id,user_name,user_email,category,reason,handoff_summary,handoff_email_status,handoff_email_attempts,handoff_email_claimed_at")
+    .select(
+      "id,conversation_id,user_name,user_email,category,reason,handoff_summary,handoff_email_status,handoff_email_attempts,handoff_email_claimed_at,contact_confirmed_at,created_at",
+    )
     .in("handoff_email_status", ["pending", "failed", "sending"])
     .lt("handoff_email_attempts", MAX_ATTEMPTS)
     .order("created_at", { ascending: true })

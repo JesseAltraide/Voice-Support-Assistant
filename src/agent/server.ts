@@ -56,6 +56,9 @@ function fail(res: Response, err: unknown): void {
 
 const app = express();
 app.disable("x-powered-by");
+// Behind Render's proxy, so req.ip is the caller rather than the proxy and the rate limit
+// buckets per caller instead of lumping everyone together.
+app.set("trust proxy", 1);
 
 app.get("/health", (_req, res) => {
   res.json({ ok: true });
@@ -78,13 +81,118 @@ app.use((_req, res, next) => {
   next();
 });
 
+/**
+ * A bound on how often one caller may hit the public routes.
+ *
+ * None of them can be guessed into, but all three reach the database on every request and
+ * nothing else stands in front of them. In process and per instance, which matches how the
+ * conversation lock already works here; a second instance would need shared state.
+ */
+const PUBLIC_WINDOW_MS = 60_000;
+const PUBLIC_MAX_REQUESTS = 30;
+const publicHits = new Map<string, { count: number; resetAt: number }>();
+
+function rateLimitPublic(req: Request, res: Response, next: NextFunction): void {
+  const now = Date.now();
+  const key = req.ip ?? "unknown";
+  const seen = publicHits.get(key);
+  if (!seen || seen.resetAt <= now) {
+    publicHits.set(key, { count: 1, resetAt: now + PUBLIC_WINDOW_MS });
+    // Dropping expired keys on write keeps the map from growing without a sweeper of its own.
+    if (publicHits.size > 1000) {
+      for (const [k, v] of publicHits) if (v.resetAt <= now) publicHits.delete(k);
+    }
+    next();
+    return;
+  }
+  seen.count += 1;
+  if (seen.count > PUBLIC_MAX_REQUESTS) {
+    res.status(429).json({ error: "too_many_requests" });
+    return;
+  }
+  next();
+}
+
+/**
+ * The end-of-call check on the caller's own details.
+ *
+ * Both routes are public, because the caller's browser has no bearer token. What stands in for
+ * one is the Vapi call id: an unguessable identifier that only the browser on that call holds.
+ * Neither route reveals anything about a conversation that has no escalation, and the only
+ * fields they return are the ones the caller gave us in the first place.
+ */
+const callEscalation = async (callId: unknown) => {
+  if (typeof callId !== "string" || !/^[0-9a-f-]{32,40}$/i.test(callId)) return null;
+  const db = getDb();
+  const conv = await db.from("conversations").select("id").eq("vapi_call_id", callId).maybeSingle();
+  if (conv.error || !conv.data) return null;
+  const esc = await db
+    .from("escalations")
+    .select("id,user_name,user_email,reason,case_reference,contact_confirmed_at,handoff_email_status")
+    .eq("conversation_id", conv.data.id as string)
+    .in("status", ["open", "in progress"])
+    .maybeSingle();
+  return esc.error || !esc.data ? null : esc.data;
+};
+
+app.get("/escalation/draft", rateLimitPublic, async (req, res) => {
+  const row = await callEscalation(req.query.call_id);
+  // The same answer whether the call is unknown or simply had no escalation: distinguishing
+  // them would say whether a given call id exists.
+  if (!row) {
+    res.status(404).json({ error: "no_escalation" });
+    return;
+  }
+  res.setHeader("Cache-Control", "no-store");
+  res.json({
+    name: row.user_name,
+    email: row.user_email,
+    // Read-only on purpose. The wording was agreed aloud during the call; only the contact
+    // details are open to correction here.
+    reasons: String(row.reason ?? "").split("\n").filter(Boolean),
+    reference: row.case_reference,
+    confirmed: row.contact_confirmed_at !== null,
+  });
+});
+
+app.post("/escalation/confirm", rateLimitPublic, express.json({ limit: "4kb" }), async (req, res) => {
+  const body = (req.body ?? {}) as { call_id?: unknown; name?: unknown; email?: unknown };
+  const row = await callEscalation(body.call_id);
+  if (!row) {
+    res.status(404).json({ error: "no_escalation" });
+    return;
+  }
+  // Once the brief has gone out, the recorded address is the one support actually received it
+  // at. Rewriting it afterwards would leave the row describing a delivery that never happened.
+  if (row.handoff_email_status === "sent") {
+    res.status(409).json({ error: "already_sent" });
+    return;
+  }
+  const name = typeof body.name === "string" ? body.name.trim().slice(0, 100) : "";
+  const email = typeof body.email === "string" ? body.email.trim().toLowerCase().slice(0, 254) : "";
+  // The same check the escalation tool applies, because this writes the same two fields.
+  if (name.length < 2 || !/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email)) {
+    res.status(400).json({ error: "invalid_details" });
+    return;
+  }
+  const { error } = await getDb()
+    .from("escalations")
+    .update({ user_name: name, user_email: email, contact_confirmed_at: new Date().toISOString() })
+    .eq("id", row.id as string);
+  if (error) {
+    res.status(500).json({ error: "could_not_save" });
+    return;
+  }
+  res.json({ ok: true });
+});
+
 app.use(express.static(fileURLToPath(new URL("../../public", import.meta.url)), {
   dotfiles: "deny",
   index: ["index.html"],
   redirect: false,
 }));
 
-app.get("/config", (_req, res) => {
+app.get("/config", rateLimitPublic, (_req, res) => {
   // Not cached: a value fixed at an edge would outlive a key rotation.
   res.setHeader("Cache-Control", "no-store");
   res.json({
