@@ -1,0 +1,182 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>RelayPay Support — Escalations</title>
+<style>
+  /* Same palette as the caller page: deep blue, teal, off-white. No ornament. */
+  :root {
+    --blue: #123a6b; --teal: #0e7c86; --bg: #f6f7f9; --surface: #ffffff;
+    --ink: #1a1f2b; --muted: #5b6676; --line: #e2e6ec; --warn: #8a5a00; --error: #8c2f2f; --ok: #1b5e35;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; min-height: 100vh; padding: 32px 24px; background: var(--bg); color: var(--ink);
+    font: 15px/1.55 Inter, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  }
+  main { max-width: 1100px; margin: 0 auto; }
+  .brand { font-size: 15px; font-weight: 600; color: var(--blue); margin-bottom: 6px; }
+  h1 { margin: 0 0 4px; font-size: 24px; font-weight: 600; letter-spacing: -0.01em; }
+  .lede { margin: 0 0 24px; color: var(--muted); font-size: 14px; }
+
+  .bar { display: flex; gap: 10px; align-items: center; margin-bottom: 20px; flex-wrap: wrap; }
+  input {
+    flex: 1 1 280px; padding: 10px 12px; font: inherit; font-size: 14px; color: var(--ink);
+    background: var(--surface); border: 1px solid var(--line); border-radius: 7px;
+  }
+  input:focus { outline: 2px solid var(--teal); outline-offset: 1px; border-color: var(--teal); }
+  button {
+    padding: 10px 18px; font: inherit; font-weight: 500; color: #fff; background: var(--blue);
+    border: 1px solid var(--blue); border-radius: 7px; cursor: pointer;
+  }
+  button:hover:not(:disabled) { background: #0d2b50; }
+  button:disabled { background: #aab3c0; border-color: #aab3c0; cursor: not-allowed; }
+  .note { margin: 0 0 20px; font-size: 13.5px; color: var(--muted); }
+  .note.error { color: var(--error); }
+
+  .case { background: var(--surface); border: 1px solid var(--line); border-radius: 10px; padding: 18px 20px; margin-bottom: 14px; }
+  .case-head { display: flex; justify-content: space-between; gap: 16px; align-items: baseline; flex-wrap: wrap; margin-bottom: 10px; }
+  .who { font-weight: 600; }
+  .who span { font-weight: 400; color: var(--muted); }
+  .when { font-size: 13px; color: var(--muted); }
+  .tags { display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 12px; }
+  .tag {
+    font-size: 11.5px; font-weight: 600; letter-spacing: 0.04em; text-transform: uppercase;
+    padding: 3px 8px; border-radius: 999px; border: 1px solid var(--line); color: var(--muted);
+  }
+  .tag.sent { color: var(--ok); border-color: #bfe0cc; }
+  .tag.pending { color: var(--warn); border-color: #e6d5ad; }
+  .tag.failed { color: var(--error); border-color: #e4c2c2; }
+  .tag.unconfirmed { color: var(--warn); border-color: #e6d5ad; }
+  ul { margin: 0 0 10px; padding-left: 18px; }
+  li { margin-bottom: 6px; }
+  .meta { font-size: 13px; color: var(--muted); }
+  .empty { color: var(--muted); }
+</style>
+</head>
+<body>
+<main>
+  <div class="brand">RelayPay</div>
+  <h1>Escalations</h1>
+  <p class="lede">Cases the assistant could not resolve, newest first.</p>
+
+  <div class="bar">
+    <input id="token" type="password" placeholder="Support access token" autocomplete="current-password" />
+    <button id="load">Load</button>
+  </div>
+  <p class="note" id="note" role="status" hidden></p>
+
+  <div id="cases"></div>
+</main>
+
+<script type="module">
+const el = (id) => document.getElementById(id);
+const KEY = "relaypay.support.token";
+
+function note(text, isError) {
+  el("note").hidden = !text;
+  el("note").className = isError ? "note error" : "note";
+  el("note").textContent = text ?? "";
+}
+
+/** Each case says plainly where it has got to, because that is what a support agent needs. */
+function statusTags(e) {
+  const tags = [[e.category, ""], [e.status, ""]];
+  // Delivery status matters more than anything else here: a brief nobody received is a case
+  // nobody is working.
+  if (e.handoff_email_status === "sent") tags.push(["sent to support", "sent"]);
+  else if (e.handoff_email_status === "failed") tags.push(["delivery failed", "failed"]);
+  else tags.push(["not yet sent", "pending"]);
+  if (!e.contact_confirmed_at) tags.push(["details unconfirmed", "unconfirmed"]);
+  return tags;
+}
+
+function renderCase(e) {
+  const box = document.createElement("div");
+  box.className = "case";
+
+  const head = document.createElement("div");
+  head.className = "case-head";
+  const who = document.createElement("div");
+  who.className = "who";
+  who.append(e.user_name ?? "Unknown");
+  const addr = document.createElement("span");
+  addr.textContent = `  ${e.user_email ?? ""}`;
+  who.append(addr);
+  const when = document.createElement("div");
+  when.className = "when";
+  when.textContent = e.created_at ? new Date(e.created_at).toLocaleString() : "";
+  head.append(who, when);
+
+  const tags = document.createElement("div");
+  tags.className = "tags";
+  for (const [text, cls] of statusTags(e)) {
+    if (!text) continue;
+    const span = document.createElement("span");
+    span.className = `tag ${cls}`.trim();
+    span.textContent = text;
+    tags.append(span);
+  }
+
+  const list = document.createElement("ul");
+  for (const issue of e.issues?.length ? e.issues : ["No reason recorded."]) {
+    const li = document.createElement("li");
+    li.textContent = issue;
+    list.append(li);
+  }
+
+  const meta = document.createElement("div");
+  meta.className = "meta";
+  const bits = [];
+  if (e.case_reference) bits.push(`Reference ${e.case_reference}`);
+  if (e.preferred_time) bits.push(`Preferred callback: ${e.preferred_time}`);
+  if (e.handoff_email_error) bits.push(`Delivery error: ${e.handoff_email_error}`);
+  bits.push(`Conversation ${e.conversation_id}`);
+  meta.textContent = bits.join(" · ");
+
+  box.append(head, tags, list, meta);
+  return box;
+}
+
+async function load() {
+  const token = el("token").value.trim();
+  if (!token) return note("Enter the support access token.", true);
+  el("load").disabled = true;
+  note("Loading…", false);
+  try {
+    const res = await fetch("/admin/escalations", { headers: { Authorization: `Bearer ${token}` } });
+    if (res.status === 401) return note("That token was not accepted.", true);
+    if (!res.ok) return note("Could not load escalations.", true);
+    const { escalations } = await res.json();
+    // Kept for this browser only, so the token is not retyped on every refresh.
+    try { sessionStorage.setItem(KEY, token); } catch { /* private window */ }
+
+    const cases = el("cases");
+    cases.replaceChildren();
+    if (!escalations.length) {
+      const p = document.createElement("p");
+      p.className = "empty";
+      p.textContent = "No escalations yet.";
+      cases.append(p);
+    } else {
+      for (const e of escalations) cases.append(renderCase(e));
+    }
+    note(`${escalations.length} escalation${escalations.length === 1 ? "" : "s"}.`, false);
+  } catch {
+    note("Could not reach the server.", true);
+  } finally {
+    el("load").disabled = false;
+  }
+}
+
+el("load").addEventListener("click", load);
+el("token").addEventListener("keydown", (e) => { if (e.key === "Enter") load(); });
+
+try {
+  const saved = sessionStorage.getItem(KEY);
+  if (saved) { el("token").value = saved; void load(); }
+} catch { /* private window: the agent types it once */ }
+</script>
+</body>
+</html>

@@ -247,6 +247,34 @@ app.get("/config", rateLimitPublic, (_req, res) => {
 
 // Vapi authenticates with the same bearer secret, set on the assistant's custom-LLM config and
 // its server URL. Mounted before the JSON parser so each route sets its own body limit.
+/**
+ * What the support team sees. Behind the bearer token, unlike the caller-facing routes: this
+ * returns the names, addresses and problems of real customers, so an unguessable call id is
+ * not enough protection here.
+ */
+app.get("/admin/escalations", requireAuth, async (_req, res) => {
+  const db = getDb();
+  const { data, error } = await db
+    .from("escalations")
+    .select(
+      "id,created_at,user_name,user_email,category,reason,status,case_reference,preferred_time,contact_confirmed_at,handoff_email_status,handoff_email_error,conversation_id",
+    )
+    .order("created_at", { ascending: false })
+    .limit(100);
+  if (error) {
+    res.status(500).json({ error: "could_not_read" });
+    return;
+  }
+  res.setHeader("Cache-Control", "no-store");
+  res.json({
+    escalations: (data ?? []).map((e) => ({
+      ...e,
+      // Split back into the issues the caller actually raised, rather than one block of text.
+      issues: String(e.reason ?? "").split("\n").filter(Boolean),
+    })),
+  });
+});
+
 app.use(requireAuth, vapiRouter());
 
 /**
