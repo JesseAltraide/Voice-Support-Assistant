@@ -424,7 +424,12 @@ app.get("/admin/escalations", requireSupport, async (_req, res) => {
       // Split back into the issues the caller actually raised, rather than one block of text.
       issues: String(e.reason ?? "").split("\n").filter(Boolean),
     })),
-    callbacks: await upcomingCallbacks(),
+    callbacks: await upcomingCallbacks().catch((err) => {
+      // The cases still render; the rota says plainly that it could not be read, because a
+      // silent empty list would be indistinguishable from having nobody to call.
+      console.error("callback rota failed:", err instanceof Error ? err.message : err);
+      return null;
+    }),
   });
 });
 
@@ -445,10 +450,16 @@ async function upcomingCallbacks() {
     .gte("slot_start", since)
     .order("slot_start", { ascending: true })
     .limit(100);
-  if (error || !data?.length) return [];
+  // Thrown, not swallowed. An empty list here reads as "nobody to ring", and showing that to
+  // support when the query actually failed is how a promised callback gets missed.
+  if (error) throw new Error(`callbacks: ${error.message}`);
+  if (!data.length) return [];
 
   const ids = [...new Set(data.map((b) => b.conversation_id as string))];
   const convs = await db.from("conversations").select("id,caller_name,caller_company,caller_city").in("id", ids);
+  // A name is context, not the job. If only this lookup fails the rota is still worth showing,
+  // so it degrades to unnamed rows rather than taking the whole page down.
+  if (convs.error) console.error("callback names lookup failed:", convs.error.message);
   const byId = new Map((convs.data ?? []).map((c) => [c.id as string, c]));
 
   return data.map((b) => {

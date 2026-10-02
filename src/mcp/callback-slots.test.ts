@@ -1,7 +1,7 @@
 import { describe, expect, test } from "vitest";
 import {
-  describeSlot, REFUSAL_REASON, slotRefusal, slotRuleRefusal, slotsOnSameDay,
-  SLOT_CAPACITY, SUPPORT_TIMEZONE,
+  bookableSlots, describeSlot, REFUSAL_REASON, slotRefusal, slotRuleRefusal,
+  HORIZON_DAYS, LEAD_TIME_MINUTES, SLOT_CAPACITY, SUPPORT_TIMEZONE,
 } from "./callback-slots.js";
 
 // Lagos is UTC+1 with no daylight saving, so 10:00 there is 09:00Z. Every fixture below is the
@@ -64,17 +64,32 @@ describe("capacity", () => {
 });
 
 describe("offering alternatives", () => {
-  test("a weekday offers slots, and every one of them is bookable", () => {
-    const slots = slotsOnSameDay(at("2026-10-05T09:00:00Z"), NOW);
+  test("every slot offered is one support could actually work", () => {
+    const slots = bookableSlots(NOW);
     expect(slots.length).toBeGreaterThan(0);
     for (const s of slots) expect(slotRuleRefusal(s, NOW)).toBeNull();
   });
 
-  test("nothing offered is ever a time support does not work", () => {
-    // Asking about a Saturday must not produce Saturday suggestions.
-    for (const s of slotsOnSameDay(at("2026-10-10T12:00:00Z"), NOW)) {
-      expect(slotRuleRefusal(s, NOW)).toBeNull();
+  test("a weekend request is still offered weekdays", () => {
+    // The dead end this replaced: searching only the requested day meant a caller asking for a
+    // Saturday was told the team works weekdays, and then offered nothing at all.
+    const slots = bookableSlots(at("2026-10-10T09:00:00Z"));
+    expect(slots.length).toBeGreaterThan(0);
+  });
+
+  test("slots come back in time order, soonest first", () => {
+    const slots = bookableSlots(NOW);
+    for (let i = 1; i < slots.length; i += 1) {
+      expect(slots[i]!.getTime()).toBeGreaterThan(slots[i - 1]!.getTime());
     }
+  });
+
+  test("nothing offered is sooner than the lead time or beyond the horizon", () => {
+    const slots = bookableSlots(NOW);
+    const first = slots[0]!.getTime();
+    const last = slots[slots.length - 1]!.getTime();
+    expect(first - NOW.getTime()).toBeGreaterThanOrEqual(LEAD_TIME_MINUTES * 60_000);
+    expect(last - NOW.getTime()).toBeLessThanOrEqual(HORIZON_DAYS * 24 * 60 * 60_000);
   });
 });
 

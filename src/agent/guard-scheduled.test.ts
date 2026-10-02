@@ -95,3 +95,31 @@ describe("a booked callback is sayable, an unbooked one is not", () => {
     expect(withBooking(reply, true).ok, `should have been blocked: ${reply}`).toBe(false);
   });
 });
+
+// A reply is only as safe as its worst sentence. The first version of the booking exemption
+// tested the whole reply at once, so one true booking sentence waved through every other promise
+// beside it — and the single-sentence tests above could never have caught it.
+describe("a booking does not launder the rest of the reply", () => {
+  const ok = (reply: string, callbackBooked = true) =>
+    checkReply({
+      reply, callerTexts: [], groundedTexts: [], forbiddenNames: [],
+      records: { escalationExists: true, ticketExists: false, callbackBooked },
+    }).ok;
+
+  test.each([
+    "Your callback is booked for Tuesday at 10. Someone has already reviewed your case.",
+    "Your callback is booked for Tuesday at 10. I have emailed you a confirmation.",
+    "I have arranged your callback. Rest assured, I promise it will be sorted.",
+    "I have arranged your callback. I have notified the team.",
+  ])("refuses %j", (reply) => {
+    expect(ok(reply), `should have been blocked: ${reply}`).toBe(false);
+  });
+
+  test.each([
+    "Your callback is booked for Tuesday at 10.",
+    "Your callback is booked for Tuesday at 10. Is there anything else I can help you with?",
+    "I have arranged your callback. You will see it on your dashboard.",
+  ])("still allows %j", (reply) => {
+    expect(ok(reply), `should have been allowed: ${reply}`).toBe(true);
+  });
+});

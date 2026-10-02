@@ -2,7 +2,7 @@ import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import type { SupabaseClient } from "@supabase/supabase-js";
 import { z } from "zod";
 import {
-  describeSlot, REFUSAL_REASON, slotRefusal, slotsOnSameDay,
+  bookableSlots, describeSlot, REFUSAL_REASON, slotRefusal,
   SLOT_CAPACITY, SLOT_MINUTES, SUPPORT_TIMEZONE,
 } from "./callback-slots.js";
 import type { ToolContext } from "./context.js";
@@ -46,7 +46,7 @@ async function bookedAt(db: SupabaseClient, slotStart: Date): Promise<number> {
  * really take rather than merely one the rules allow.
  */
 async function alternatives(db: SupabaseClient, around: Date, now: Date, zone: string | null) {
-  const candidates = slotsOnSameDay(around, now);
+  const candidates = bookableSlots(now);
   // Nearest to what they asked for first: someone who wanted Tuesday morning wants Tuesday
   // morning, not whatever happens to be earliest in the week.
   candidates.sort((a, b) => Math.abs(a.getTime() - around.getTime()) - Math.abs(b.getTime() - around.getTime()));

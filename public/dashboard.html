@@ -212,6 +212,18 @@ function renderCallbacks(callbacks) {
   const section = el("callbacks-section");
   const list = el("callbacks");
   list.replaceChildren();
+
+  // null means the server could not read the rota. Saying so is the whole point: an empty list
+  // would read as "nobody to ring today", which is the one wrong thing to tell support.
+  if (callbacks === null) {
+    section.hidden = false;
+    const p = document.createElement("p");
+    p.className = "empty";
+    p.textContent = "Could not load the callbacks. Reload the page — do not assume there are none.";
+    list.append(p);
+    return;
+  }
+
   section.hidden = callbacks.length === 0;
   if (!callbacks.length) return;
 
@@ -263,7 +275,7 @@ async function load() {
     } else {
       for (const e of escalations) cases.append(renderCase(e));
     }
-    renderCallbacks(callbacks ?? []);
+    renderCallbacks(callbacks === undefined ? [] : callbacks);
     note(`${escalations.length} escalation${escalations.length === 1 ? "" : "s"}.`, false);
   } catch {
     note("Could not reach the server.", true);

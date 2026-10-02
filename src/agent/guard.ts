@@ -370,10 +370,13 @@ export function checkReply(input: GuardInput): GuardResult {
   const bookingClaim =
     /\b(call ?back|call)\b[^.]{0,30}\b(is|has been)\s+(booked|arranged|scheduled|set up)\b|\b(booked|arranged|scheduled)\s+(a|your|the)\s+call ?back\b/;
   const booked = input.records?.callbackBooked === true;
-  // The exemption is the booking sentence itself, not a relaxing of the rule. Dropping whole
-  // patterns while a booking exists would also drop the promises they were written to catch:
-  // "I have scheduled a call for you right away" is still a commitment nobody can keep.
-  if (COMMITMENTS.some((p) => unnegatedMatch(norm, p)) && !(booked && bookingClaim.test(norm))) {
+  // Checked sentence by sentence, so the exemption really is the booking sentence and nothing
+  // else. Testing the whole reply at once meant one true booking licensed every other promise in
+  // the same breath: "Your callback is booked for Tuesday. I have emailed you a confirmation."
+  // passed as a unit. A reply is only as safe as its worst sentence.
+  const sentences = norm.split(/(?<=[.!?])\s+/).filter((s) => s.trim().length > 0);
+  const unexempt = sentences.filter((s) => !(booked && bookingClaim.test(s)));
+  if (unexempt.some((s) => COMMITMENTS.some((p) => unnegatedMatch(s, p)))) {
     reasons.add("promise");
   }
   if (unnegatedMatch(norm, RELATIVE_TIME)) reasons.add("promise");

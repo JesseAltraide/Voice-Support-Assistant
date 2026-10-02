@@ -27,22 +27,26 @@ export type SlotRefusal =
   | "not_on_the_half_hour"
   | "full";
 
-/** The parts of an instant as they read in a given zone, which is what the rules are about. */
-function partsIn(instant: Date, timeZone: string): { weekday: number; hour: number; minute: number } {
-  const fmt = new Intl.DateTimeFormat("en-GB", {
-    timeZone,
-    weekday: "short",
-    hour: "2-digit",
-    minute: "2-digit",
-    hour12: false,
-  });
-  const parts = Object.fromEntries(fmt.formatToParts(instant).map((p) => [p.type, p.value]));
-  const days = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
-  return {
-    weekday: days.indexOf(String(parts.weekday)),
-    hour: Number(parts.hour),
-    minute: Number(parts.minute),
-  };
+// Built once. Constructing a formatter is expensive, and the forward search below asks about
+// hundreds of candidate slots in a single tool call.
+const SUPPORT_PARTS = new Intl.DateTimeFormat("en-GB", {
+  timeZone: SUPPORT_TIMEZONE,
+  weekday: "short",
+  hour: "2-digit",
+  minute: "2-digit",
+  hourCycle: "h23",
+});
+
+const DAYS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+
+/** The parts of an instant as they read in support's zone, which is what the rules are about. */
+function partsIn(instant: Date): { weekday: number; hour: number; minute: number } {
+  const parts = Object.fromEntries(SUPPORT_PARTS.formatToParts(instant).map((p) => [p.type, p.value]));
+  const weekday = DAYS.indexOf(String(parts.weekday));
+  // Fail closed. An unrecognised weekday name would otherwise be -1, which passes the weekend
+  // check and quietly makes Saturdays bookable.
+  if (weekday === -1) throw new Error(`unrecognised weekday from Intl: ${String(parts.weekday)}`);
+  return { weekday, hour: Number(parts.hour), minute: Number(parts.minute) };
 }
 
 /**
@@ -53,7 +57,12 @@ function partsIn(instant: Date, timeZone: string): { weekday: number; hour: numb
  * question about Lagos.
  */
 export function slotRuleRefusal(slotStart: Date, now: Date): SlotRefusal | null {
-  const { weekday, hour, minute } = partsIn(slotStart, SUPPORT_TIMEZONE);
+  // Seconds and milliseconds must be zero, not merely ignored. Capacity is counted by matching
+  // slot_start exactly, so 09:00:01 would be a slot of its own with nothing booked in it — and a
+  // caller steering the model to that string could book past a full slot for ever.
+  if (slotStart.getUTCSeconds() !== 0 || slotStart.getUTCMilliseconds() !== 0) return "not_on_the_half_hour";
+
+  const { weekday, hour, minute } = partsIn(slotStart);
   if (minute % SLOT_MINUTES !== 0) return "not_on_the_half_hour";
   if (weekday === 0 || weekday === 6) return "weekend";
   // The slot must both start on or after opening and finish by closing.
@@ -71,13 +80,27 @@ export function slotRefusal(slotStart: Date, now: Date, alreadyBooked: number): 
   return slotRuleRefusal(slotStart, now) ?? (alreadyBooked >= SLOT_CAPACITY ? "full" : null);
 }
 
-/** Every slot support could work on the day a caller asked about, soonest first. */
-export function slotsOnSameDay(around: Date, now: Date): Date[] {
+/**
+ * Bookable slots to offer when the caller's own choice cannot be met.
+ *
+ * It searches the whole open window rather than the requested day. Searching only that day left
+ * the commonest refusals with nothing to offer: a caller asking for a Saturday was told the team
+ * works weekdays and then offered no weekday, because the only candidates considered were on the
+ * Saturday itself. The same dead end followed a request beyond the two-week horizon.
+ *
+ * Results are returned in time order. The caller of this function decides what "nearest" means,
+ * because nearest to the time somebody asked for is not the same as soonest.
+ */
+export function bookableSlots(now: Date): Date[] {
   const slots: Date[] = [];
-  const dayStart = new Date(around);
-  dayStart.setUTCHours(0, 0, 0, 0);
-  for (let m = 0; m < 24 * 60 + 24 * 60; m += SLOT_MINUTES) {
-    const slot = new Date(dayStart.getTime() + m * 60_000);
+  // Start at the first half hour on or after the lead time, and walk the horizon.
+  const first = new Date(now.getTime() + LEAD_TIME_MINUTES * 60_000);
+  first.setUTCSeconds(0, 0);
+  first.setUTCMinutes(Math.ceil(first.getUTCMinutes() / SLOT_MINUTES) * SLOT_MINUTES);
+
+  const end = now.getTime() + HORIZON_DAYS * 24 * 60 * 60_000;
+  for (let t = first.getTime(); t <= end; t += SLOT_MINUTES * 60_000) {
+    const slot = new Date(t);
     if (slotRuleRefusal(slot, now) === null) slots.push(slot);
   }
   return slots;
