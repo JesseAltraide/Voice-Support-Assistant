@@ -278,3 +278,27 @@ describe("tickets and escalations per conversation are bounded and consistent", 
     expect(data?.status).toBe("escalated");
   });
 });
+
+// The form's email decides whether a caller sees account records, so the way it is matched is an
+// authorisation check. Matching it with ilike made it a pattern: "%@lagosledger.example" passed
+// the email format check and matched a real account, which is typing your way into someone
+// else's transactions. Matching must stay exact.
+describe("the form email is matched exactly, never as a pattern", () => {
+  const EMAIL_RE = /^[^@\s]+@[^@\s]+\.[^@\s]+$/;
+
+  it("wildcard addresses still look like valid emails, which is why the query must be exact", () => {
+    // If this ever fails, the format check alone is no longer the thing standing in the way.
+    expect(EMAIL_RE.test("%@lagosledger.example")).toBe(true);
+    expect(EMAIL_RE.test("amara@lagosledger.exampl_")).toBe(true);
+  });
+
+  it("an exact match finds the account and a pattern finds nothing", async () => {
+    const exact = await db.from("customers").select("customer_id").eq("contact_email", "amara@lagosledger.example");
+    expect(exact.data?.[0]?.customer_id).toBe("CUS-1001");
+
+    for (const pattern of ["%@lagosledger.example", "amara@lagosledger.exampl_", "%@%.%"]) {
+      const { data } = await db.from("customers").select("customer_id").eq("contact_email", pattern);
+      expect(data ?? [], `pattern matched an account: ${pattern}`).toHaveLength(0);
+    }
+  });
+});

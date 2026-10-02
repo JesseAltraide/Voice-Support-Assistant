@@ -145,10 +145,13 @@ function rateLimitPublic(req: Request, res: Response, next: NextFunction): void 
  * anything, which is why lookup_customer still needs two identifiers.
  */
 async function customerForEmail(db: ReturnType<typeof getDb>, email: string): Promise<Record<string, string>> {
+  // Exact, never a pattern. ilike reads % and _ as wildcards, so "%@lagosledger.example" passed
+  // the email check and matched a real account — typing your way into somebody else's records.
+  // The address arrives already lowercased, and stored addresses are lowercase.
   const { data, error } = await db
     .from("customers")
     .select("customer_id")
-    .ilike("contact_email", email)
+    .eq("contact_email", email)
     .maybeSingle();
   if (error || !data) return {};
   return { linked_customer_id: data.customer_id as string };
