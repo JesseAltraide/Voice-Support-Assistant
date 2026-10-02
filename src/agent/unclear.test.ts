@@ -2,7 +2,7 @@ import { readFileSync } from "node:fs";
 import { describe, expect, test } from "vitest";
 import {
   DIDNT_CATCH, OFF_TOPIC_CLOSE, OFF_TOPIC_LIMIT, OFF_TOPIC_LINE, RECOVERY_LIMIT, STILL_DIDNT_CATCH,
-  rephraseLine, UNCLEAR_LIMIT, UNHEARD_CLOSE,
+  guardRetryLine, rephraseLine, UNCLEAR_LIMIT, UNHEARD_CLOSE,
 } from "./guard.js";
 import { deriveAnswerType, MODEL_ANSWER_TYPES, parseTypedReply, type TurnFacts } from "./turn-type.js";
 
@@ -137,5 +137,22 @@ describe("the ask-to-repeat never wraps itself", () => {
 
   test("with nothing to repeat it still asks for something", () => {
     expect(rephraseLine(null)).toContain("Could you say that again?");
+  });
+});
+
+// Found on a real call: a second consecutive mishearing wrapped the first retry line instead of
+// giving a plain re-ask, because isRepeatPrompt only recognised "Sorry, I didn't", not the newer
+// "Let me put that another way" opener.
+describe("the retry line never wraps itself either", () => {
+  test("guardRetryLine's own default text is recognised as a repeat prompt", () => {
+    const first = guardRetryLine(null);
+    expect(first).toBe("Let me put that another way. Could you tell me a bit more about what you need?");
+    const second = guardRetryLine(first);
+    expect(second).toBe(first);
+    expect(second.match(/Let me put that another way/g) ?? []).toHaveLength(1);
+  });
+
+  test("it never wraps a 'Sorry, I didn't' prompt either", () => {
+    expect(guardRetryLine(DIDNT_CATCH)).not.toContain("Sorry, I didn't");
   });
 });

@@ -3,8 +3,11 @@ export const HOLDING_LINE = "One moment while I check that.";
 export const SAFE_FALLBACK =
   "I'm sorry, I can't answer that here. I can log a request for a specialist to follow up if you'd like.";
 /** Said instead of a blocked reply when an escalation exists: true and safe. */
-export const ESCALATED_FALLBACK =
-  "Your request is logged and a support representative will follow up. No callback time has been confirmed.";
+// No claim about a callback here, in either direction: this line is spoken for any exhausted
+// retry budget, whatever the caller and agent were actually stuck on, and it used to assert flatly
+// that no callback had been confirmed even when callbacks were never the topic — or, now that
+// book_callback is real, when one genuinely had been.
+export const ESCALATED_FALLBACK = "Your request is logged and a support representative will follow up.";
 export const ERROR_FALLBACK = "I'm sorry, something went wrong on our side. Your request has been logged for the support team.";
 /**
  * Used when the failure was the database itself, so no ticket exists. Claiming the request was
@@ -36,7 +39,14 @@ export const RECOVERY_LIMIT = 3;
  * will happily pick one up and wrap it again: "Sorry, I didn't quite catch that. Sorry, I didn't
  * catch that. Could you say that again?" The caller hears a stutter and learns nothing new.
  */
-export const isRepeatPrompt = (text: string): boolean => text.trimStart().startsWith("Sorry, I didn't");
+// Both of the server's own asks-to-repeat, so neither is ever picked up as "the question to
+// repeat" and wrapped again. Missing "Let me put that another way" here is exactly how it
+// happened on a real call: two guard trips in a row produced "Let me put that another way. Let
+// me put that another way. Could you tell me a bit more about what you need?"
+export const isRepeatPrompt = (text: string): boolean => {
+  const t = text.trimStart();
+  return t.startsWith("Sorry, I didn't") || t.startsWith("Let me put that another way");
+};
 
 /**
  * What to say when the guard replaced the agent's own words.

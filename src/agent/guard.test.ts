@@ -1,5 +1,5 @@
 import { describe, expect, it, test } from "vitest";
-import { checkReply, DIDNT_CATCH, type GuardInput, guardRetryLine } from "./guard.js";
+import { checkReply, DIDNT_CATCH, ESCALATED_FALLBACK, type GuardInput, guardRetryLine } from "./guard.js";
 
 const base = (over: Partial<GuardInput>): GuardInput => ({
   reply: "",
@@ -201,5 +201,16 @@ describe("what is said when the guard replaces a reply", () => {
 
   test("does not repeat one of our own apologies back", () => {
     expect(guardRetryLine(DIDNT_CATCH)).not.toMatch(/didn't catch/i);
+  });
+});
+
+// Found on a real call: once any escalation existed, EVERY later guard trip spoke this fixed line
+// claiming "no callback time has been confirmed" — including when the topic being retried was a
+// callback readback that had nothing to do with the earlier escalation, and even though a booked
+// callback is now a real, checkable thing. The line must not assert anything about callbacks
+// either way, since it is spoken for any exhausted retry, on any topic.
+describe("the exhausted-retry line makes no claim about a callback", () => {
+  it("says nothing about a callback in either direction", () => {
+    expect(ESCALATED_FALLBACK.toLowerCase()).not.toContain("callback");
   });
 });

@@ -414,9 +414,12 @@ async function runTurn(p: TurnRequest): Promise<TurnResult> {
     note = `${derived.note}. ${said}`;
   }
   if (!guard.ok) {
-    // An escalation logged earlier in the call counts too, so the caller is not offered one twice.
-    // Before the limit, ask the same question again rather than reaching for a specialist.
-    const giveUp = records.escalationExists || failedRecoveries + 1 >= RECOVERY_LIMIT;
+    // Giving up is a budget of retries, not a permanent state an earlier escalation locks in. It
+    // used to short-circuit the moment any escalation existed, so a later trip on something
+    // entirely unrelated — a callback readback, on a real call — got the fixed "giving up" line
+    // with no chance to recover from a one-off mistake. The budget now applies to whatever is
+    // actually being attempted right now, not to the whole rest of the call.
+    const giveUp = failedRecoveries + 1 >= RECOVERY_LIMIT;
     spoken = giveUp ? fallbackFor(records.escalationExists) : guardRetryLine(lastQuestion);
     answerType = records.escalationExists ? "escalate" : giveUp ? "decline" : "clarify";
     note = `speech guard: ${guard.reasons.join(",")}. ${said}`;
