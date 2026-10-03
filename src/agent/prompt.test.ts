@@ -15,3 +15,12 @@ describe("the system prompt matches the flow that exists", () => {
     expect(SYSTEM_PROMPT).toMatch(/name and email normally come from the form/);
   });
 });
+
+describe("account setup and the email read-back", () => {
+  test("tells the model not to invent sign-up steps", () => {
+    expect(SYSTEM_PROMPT).toMatch(/no sign-up steps/);
+  });
+  test("no longer claims the caller can see their email on screen", () => {
+    expect(SYSTEM_PROMPT).not.toMatch(/they can see it on screen/);
+  });
+});
