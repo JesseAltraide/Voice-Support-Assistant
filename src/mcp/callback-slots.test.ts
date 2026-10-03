@@ -192,3 +192,12 @@ describe("refusal wording for a taken slot", () => {
     expect(REFUSAL_REASON.full).toBe("that time has already been booked");
   });
 });
+
+describe("one caller per slot", () => {
+  test("capacity is 1: a slot with a single booking is already taken", () => {
+    expect(SLOT_CAPACITY).toBe(1);
+    const free = bookableSlots(NOW)[0]!;
+    expect(slotRefusal(free, NOW, 1)).toBe("full");
+    expect(slotRefusal(free, NOW, 0)).toBeNull();
+  });
+});

@@ -13,7 +13,7 @@ export const CLOSES_HOUR = 17;
 /** Callbacks are offered on the half hour, which is short enough to be honest about. */
 export const SLOT_MINUTES = 30;
 /** How many callbacks support can take in one slot. Capacity, not a named roster. */
-export const SLOT_CAPACITY = 2;
+export const SLOT_CAPACITY = 1;
 /** Nothing is offered sooner than this: a booking the team cannot see coming is not a booking. */
 export const LEAD_TIME_MINUTES = 60;
 /** How far ahead a caller may book. Beyond this, support's own plans are not knowable. */
