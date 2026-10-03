@@ -214,3 +214,33 @@ describe("the exhausted-retry line makes no claim about a callback", () => {
     expect(ESCALATED_FALLBACK.toLowerCase()).not.toContain("callback");
   });
 });
+
+describe("a verified caller may hear only the account facts the lookup returned", () => {
+  const FACTS = ["Their plan is Growth. Their account status is active. Their verification status is approved."];
+  const check = (reply: string, accountFacts?: string[]) => checkReply(base({ reply, accountFacts }));
+
+  it("is blocked without a verified lookup, exactly as before", () => {
+    expect(check("You are on the Growth plan and your account is active.").reasons).toContain("record_field");
+  });
+
+  it("is allowed when the lookup returned exactly those facts", () => {
+    expect(check("You are on the Growth plan, your account is active and verification is approved.", FACTS).reasons).not.toContain("record_field");
+  });
+
+  it("a plan the record does not hold is still blocked", () => {
+    expect(check("You are on the Scale plan.", FACTS).reasons).toContain("record_field");
+  });
+
+  it("a status the record does not hold is still blocked", () => {
+    expect(check("Your account is restricted.", FACTS).reasons).toContain("record_field");
+  });
+
+  it("support notes are never speakable, verified or not", () => {
+    expect(check("The support notes say your account has normal access.", FACTS).reasons).toContain("record_field");
+  });
+
+  it("an explanation of why an account is under review is never speakable", () => {
+    const f = ["Their plan is Scale. Their account status is restricted. Their verification status is review required."];
+    expect(check("Your account is restricted because compliance flagged it for review.", f).reasons).toContain("record_field");
+  });
+});

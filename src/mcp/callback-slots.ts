@@ -136,15 +136,44 @@ export function describeWindow(callerTimeZone: string | null, now: Date = new Da
   // Both forms, because the agent speaks and nobody says "zero eight hundred" on the phone. The
   // guard checks a stated number against what it was given, so if the note held only "08:00" the
   // natural "between 8 and 5" would be refused as invented.
-  const spoken = (d: Date) => {
-    const [h, m] = time(d).split(":").map(Number);
-    const hour = h! % 12 === 0 ? 12 : h! % 12;
-    const partOfDay = h! < 12 ? "in the morning" : h! < 18 ? "in the afternoon" : "in the evening";
-    return `${hour}${m ? `:${String(m).padStart(2, "0")}` : ""} ${partOfDay}`;
-  };
   const open = atSupportHour(day, OPENS_HOUR);
   const close = atSupportHour(day, CLOSES_HOUR);
-  return `Monday to Friday, ${time(open)} to ${time(close)}, that is between ${spoken(open)} and ${spoken(close)}`;
+  return `Monday to Friday, ${time(open)} to ${time(close)}, that is between ${spokenClock(open, callerTimeZone)} and ${spokenClock(close, callerTimeZone)}`;
+}
+
+/** "3 in the afternoon", "10:30 in the morning" — how a clock time is actually said aloud. */
+function spokenClock(d: Date, callerTimeZone: string | null): string {
+  const fmt = (zone: string) =>
+    new Intl.DateTimeFormat("en-GB", { timeZone: zone, hour: "2-digit", minute: "2-digit", hourCycle: "h23" }).format(d);
+  const raw = (() => {
+    try {
+      return fmt(callerTimeZone ?? SUPPORT_TIMEZONE);
+    } catch {
+      return fmt(SUPPORT_TIMEZONE);
+    }
+  })();
+  const [h, m] = raw.split(":").map(Number);
+  const hour = h! % 12 === 0 ? 12 : h! % 12;
+  const partOfDay = h! < 12 ? "in the morning" : h! < 18 ? "in the afternoon" : "in the evening";
+  return `${hour}${m ? `:${String(m).padStart(2, "0")}` : ""} ${partOfDay}`;
+}
+
+/**
+ * How a specific booked or offered slot is actually said aloud: "Wednesday 7 October at 3 in the
+ * afternoon". describeSlot's own digit form ("15:00") is exact but is not how the agent speaks,
+ * and the guard only accepts a number in the phrasing it was actually given — a real, successfully
+ * booked time was being refused as invented for exactly this reason, because the tool only ever
+ * returned the digit form and nothing passed either form to the guard as grounding at all.
+ */
+export function describeSlotSpoken(slotStart: Date, callerTimeZone: string | null): string {
+  const weekdayDate = (zone: string) =>
+    new Intl.DateTimeFormat("en-GB", { timeZone: zone, weekday: "long", day: "numeric", month: "long" }).format(slotStart);
+  try {
+    const zone = callerTimeZone ?? SUPPORT_TIMEZONE;
+    return `${weekdayDate(zone)} at ${spokenClock(slotStart, zone)}`;
+  } catch {
+    return `${weekdayDate(SUPPORT_TIMEZONE)} at ${spokenClock(slotStart, SUPPORT_TIMEZONE)}`;
+  }
 }
 
 /** How the time reads to the caller, in their own zone, so it can be said back to them. */

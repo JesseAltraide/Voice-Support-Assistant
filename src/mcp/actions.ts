@@ -5,7 +5,6 @@ import { z } from "zod";
 import { buildHandoffBrief, type BriefToolCall, type BriefTurn } from "./brief.js";
 import { isUuid, type ToolContext } from "./context.js";
 import { addEvent } from "./events.js";
-import { sendCallerEmail } from "../agent/handoff-email.js";
 import { runTool, type ToolOutcome } from "./instrument.js";
 import { normalizeStatus } from "./normalize.js";
 
@@ -305,34 +304,6 @@ async function runEscalation(db: SupabaseClient, conversationId: string, args: E
   }
   if (error || !data) throw new Error(error?.message ?? "escalation insert returned no row");
   const escalationId = data.id as string;
-
-  // A confirmation to the caller themselves, to the address already typed on the form — never
-  // the one heard by voice, for the same reason the escalation row itself prefers it. The
-  // internal handoff email to support is a separate, already-queued thing (handoff_email_status
-  // above); this is the caller's own receipt that their request exists. It can only mark what
-  // happened, never fail the escalation, which already stands.
-  if (!conv.is_test) {
-    try {
-      await sendCallerEmail({
-        to: email,
-        subject: "We've logged your RelayPay request",
-        text: [
-          `Hello ${name},`,
-          "",
-          "Your request has been logged with RelayPay support, and a specialist will follow up",
-          "by email at this address.",
-          caseReference ? `\nCase reference: ${caseReference}` : "",
-          "",
-          "RelayPay Support",
-        ].join("\n"),
-      });
-      await addEvent(db, conv.id, "state_change", "caller confirmation email sent", { escalation_id: escalationId });
-    } catch (err) {
-      await addEvent(db, conv.id, "failure", "caller confirmation email failed", {
-        reason: (err instanceof Error ? err.message : "unknown").slice(0, 200),
-      });
-    }
-  }
 
   let ticketId: string | null = null;
   try {

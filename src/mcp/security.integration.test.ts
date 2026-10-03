@@ -42,18 +42,18 @@ afterAll(async () => {
   await db.from("tool_calls").delete().is("conversation_id", null).eq("error_message", "missing conversation context");
 });
 
-describe("wildcards cannot stand in for a second identifier", () => {
+describe("wildcards cannot stand in for the company", () => {
   let client: Client;
   // A fresh conversation per test: the deliberate misses below would otherwise trip the lookup limit.
   beforeEach(async () => { client = await connect({ conversationId: await newConversation(), turnId: null }); });
 
-  it.each(["*", "Lagos*", "*Ledger", "%", "_agosLedger"])("company_name %s with only a customer_id finds nothing", async (company) => {
-    const { body } = await call(client, "lookup_customer", { customer_id: "CUS-1001", company_name: company });
+  it.each(["*", "Lagos*", "*Ledger", "%", "_agosLedger"])("company_name %s with a matching email and name still finds nothing", async (company) => {
+    const { body } = await call(client, "lookup_customer", { email: "amara@lagosledger.example", contact_name: "Amara Okafor", company_name: company });
     expect(body.found).toBe(false);
   });
 
-  it("positive control: the real company name with the same id still links", async () => {
-    const { body } = await call(client, "lookup_customer", { customer_id: "CUS-1001", company_name: "LagosLedger" });
+  it("positive control: the real company name with the same email and name still links", async () => {
+    const { body } = await call(client, "lookup_customer", { email: "amara@lagosledger.example", contact_name: "Amara Okafor", company_name: "LagosLedger" });
     expect(body.found).toBe(true);
   });
 });
@@ -64,7 +64,7 @@ describe("the failed-lookup limit is enforced, not advisory", () => {
     const client = await connect({ conversationId: id, turnId: null });
     // Verified first: an unverified lookup is refused before any record is read, so it is not a
     // failed lookup and must not spend the caller's budget of them.
-    await call(client, "lookup_customer", { company_name: "LagosLedger", email: "amara@lagosledger.example" });
+    await call(client, "lookup_customer", { company_name: "LagosLedger", email: "amara@lagosledger.example", contact_name: "Amara Okafor" });
     for (const ref of ["TXN-0001", "TXN-0002", "TXN-0003"]) {
       expect((await call(client, "lookup_transaction", { transaction_id: ref })).body.found).toBe(false);
     }
@@ -73,7 +73,7 @@ describe("the failed-lookup limit is enforced, not advisory", () => {
     expect(blocked.body.limit_reached).toBe(true);
     expect(blocked.body.next_step).toBe("offer_specialist_followup");
     expect((await call(client, "lookup_payout", { payout_id: "PAY-7001" })).body.limit_reached).toBe(true);
-    expect((await call(client, "lookup_customer", { company_name: "LagosLedger", email: "amara@lagosledger.example" })).body.limit_reached).toBe(true);
+    expect((await call(client, "lookup_customer", { company_name: "LagosLedger", email: "amara@lagosledger.example", contact_name: "Amara Okafor" })).body.limit_reached).toBe(true);
   });
 });
 
@@ -81,7 +81,7 @@ describe("lookups do not echo identifiers or account status", () => {
   it("no customer_id from lookup_transaction, and no raw account state from lookup_customer", async () => {
     const client = await connect({ conversationId: await newConversation(), turnId: null });
     // The account is matched first; a reference alone no longer opens a record.
-    const cust = await call(client, "lookup_customer", { company_name: "AccraStack", email: "efua@accrastack.example" });
+    const cust = await call(client, "lookup_customer", { company_name: "AccraStack", email: "efua@accrastack.example", contact_name: "Efua Mensah" });
     const txn = await call(client, "lookup_transaction", { transaction_id: "TXN-9003" });
     expect(txn.body.found).toBe(true);
     expect(txn.body.customer_id).toBeUndefined();
@@ -99,8 +99,8 @@ describe("lookups do not echo identifiers or account status", () => {
   it("a second lookup for a different customer does not silently relink the conversation", async () => {
     const id = await newConversation();
     const client = await connect({ conversationId: id, turnId: null });
-    await call(client, "lookup_customer", { company_name: "LagosLedger", email: "amara@lagosledger.example" });
-    const second = await call(client, "lookup_customer", { company_name: "NairobiOps", email: "daniel@nairobiops.example" });
+    await call(client, "lookup_customer", { company_name: "LagosLedger", email: "amara@lagosledger.example", contact_name: "Amara Okafor" });
+    const second = await call(client, "lookup_customer", { company_name: "NairobiOps", email: "daniel@nairobiops.example", contact_name: "Daniel Mwangi" });
     expect(second.body.found).toBe(false);
     const { data } = await db.from("conversations").select("linked_customer_id").eq("id", id).single();
     expect(data?.linked_customer_id).toBe("CUS-1001");
@@ -115,7 +115,7 @@ describe("a model-supplied customer_id cannot attach a ticket to someone else", 
     const { data } = await db.from("support_tickets").select("customer_id").eq("conversation_id", id).single();
     expect(data?.customer_id).toBeNull();
 
-    await call(client, "lookup_customer", { company_name: "LagosLedger", email: "amara@lagosledger.example" });
+    await call(client, "lookup_customer", { company_name: "LagosLedger", email: "amara@lagosledger.example", contact_name: "Amara Okafor" });
     await call(client, "create_support_ticket", { customer_id: "CUS-1002", category: "account", priority: "low", summary: "A second, different issue." });
     const { data: linked } = await db.from("support_tickets").select("customer_id").eq("conversation_id", id).eq("category", "account").single();
     expect(linked?.customer_id).toBe("CUS-1001");
@@ -124,7 +124,7 @@ describe("a model-supplied customer_id cannot attach a ticket to someone else", 
   it("a linked customer in a non-standard state raises a low ticket to high, without saying so", async () => {
     const id = await newConversation();
     const client = await connect({ conversationId: id, turnId: null });
-    await call(client, "lookup_customer", { company_name: "AccraStack", email: "efua@accrastack.example" });
+    await call(client, "lookup_customer", { company_name: "AccraStack", email: "efua@accrastack.example", contact_name: "Efua Mensah" });
     const res = await call(client, "create_support_ticket", { category: "account", priority: "low", summary: "Caller reports a problem with access." });
     expect(res.text).not.toMatch(/high|restricted/i);
     const { data } = await db.from("support_tickets").select("priority").eq("conversation_id", id).single();

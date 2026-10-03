@@ -12,6 +12,7 @@ import {
   type TransactionRow,
 } from "./speakable.js";
 import type { ToolContext } from "./context.js";
+import { describeAccount } from "./account-facts.js";
 
 const FAILED_LOOKUP_LIMIT = 3;
 const MAX_REF = 64;
@@ -75,7 +76,6 @@ const CUSTOMER_MISS = { linked: false, customer_id: null, company_name: null, su
  * Upper bound on the customer rows scanned when a company name is the only identifier. The
  * comparison happens in code, so this caps the work rather than the correctness.
  */
-const CUSTOMER_SCAN_LIMIT = 500;
 
 /** Account states that are safe to confirm as "nothing wrong here". Anything else is support's. */
 const SETTLED_ACCOUNT = "active";
@@ -129,7 +129,7 @@ const needsVerification = (shape: Record<string, unknown>): ToolOutcome => ({
     ...shape,
     found: false,
     needs_verification: true,
-    next_step: "ask_for_the_company_name_or_the_email_on_the_account_then_call_lookup_customer",
+    next_step: "ask_for_the_company_name_on_the_account_then_call_lookup_customer",
   },
   summary: "refused: caller not verified against an account",
 });
@@ -139,7 +139,7 @@ export function registerLookupTools(server: McpServer, db: SupabaseClient, ctx: 
     "lookup_customer",
     {
       description:
-        "Find the caller's customer record and link this conversation to it, so a ticket or escalation reaches the right account. Pass EVERY identifier the caller has given you, including their own name: contact_name, company_name, email, customer_id. Two are needed, and a caller who says \"I am Amara from LagosLedger\" has given you two — contact_name and company_name. Read support_summary aloud exactly as written and say nothing else about the account: plan, status, verification and support notes are never spoken.",
+        "Find the caller's customer record and link this conversation to it, so a ticket or escalation reaches the right account. Email and name are filled in from the form, so the only thing to ask the caller for is company_name. All three must match one account. You may tell a linked caller their plan, account status and verification status in plain words from account_facts, and nothing else: support notes, balances, contact details and the reason for a status are never spoken.",
       inputSchema: {
         customer_id: z.string().max(MAX_REF).optional(),
         email: z.string().max(254).optional(),
@@ -154,52 +154,44 @@ export function registerLookupTools(server: McpServer, db: SupabaseClient, ctx: 
       runTool(db, ctx, "lookup_customer", "link ticket/escalation to a customer", "identifiers supplied", async (conversationId) => {
         if (await lookupsBlocked(db, conversationId)) return blockedOutcome(CUSTOMER_MISS);
 
+        // Name and email were typed on the form and are stored, so the caller is only ever asked
+        // for the company, the one field that is optional on the form. The stored form wins; spoken values are only used on a call with no form.
+        const { data: onFile, error: onFileError } = await db
+          .from("conversations")
+          .select("caller_name,caller_email")
+          .eq("id", conversationId)
+          .maybeSingle();
+        if (onFileError) throw new Error(onFileError.message);
         const id = normalizeId(args.customer_id, "CUS");
-        const email = args.email?.trim().toLowerCase() || null;
+        const email = ((onFile?.caller_email as string | null)?.trim() || args.email?.trim() || "").toLowerCase() || null;
         const company = args.company_name?.trim() || null;
-        // An initial is not an identifier, so it does not count towards the two required either.
-        const suppliedName = args.contact_name?.trim() ?? "";
+        const suppliedName = (onFile?.caller_name as string | null)?.trim() || args.contact_name?.trim() || "";
         const contact = suppliedName.length >= 2 ? suppliedName : null;
-        const provided = [id, email, company, contact].filter(Boolean).length;
-        // Still two. One identifier would let anyone learn whether a company has an account by
-        // naming it, and "enough identifying information" is the condition the brief puts on
-        // this lookup. A caller's own name now counts towards it, which is what the brief's
-        // example supplies alongside the company.
-        if (provided < 2) {
+        // All three must agree with one account, so a company name alone can never reveal
+        // whether an account exists.
+        const provided = [email, company, contact].filter(Boolean).length;
+        if (provided < 3) {
           return {
-            result: { ...CUSTOMER_MISS, found: false, next_step: "ask_for_one_more_detail_such_as_the_email_on_the_account" },
+            result: { ...CUSTOMER_MISS, found: false, next_step: "ask_for_the_company_name_on_the_account" },
             summary: `found=false identifiers=${provided}`,
           };
         }
 
-        // The company name is still never put into a query: pattern characters in it (%, _ and
-        // PostgREST's *) once matched every row. It is compared in code with strict equality
-        // instead. When it is the ONLY identifier there is nothing to filter on, so the
-        // candidate set is the customer list itself — small, and bounded — rather than an
-        // arbitrary first few rows that might not contain the caller at all.
-        const columns = "customer_id,company_name,contact_name,plan,account_status,kyc_status";
+        // The company name is never put into a query: pattern characters in it (%, _ and PostgREST's *)
+        // once matched every row. It is compared in code with strict equality instead.
+        const columns = "customer_id,company_name,contact_name,contact_email,plan,account_status,kyc_status";
         let query = db.from("customers").select(columns).limit(5);
         if (id) query = query.eq("customer_id", id);
         if (email) query = query.eq("contact_email", email);
-        // Exact equality on the company, which an index can serve. `eq` is not a pattern match,
-        // so the characters that once made a company name match every row are literal here.
-        if (!id && !email && company) query = query.eq("company_name", company);
-        let { data, error } = await query;
+        const { data, error } = await query;
         if (error) throw new Error(error.message);
-
-        // Only a company name that differs in case or spacing falls through to a scan, and only
-        // when nothing else could narrow the search. The comparison below is still the authority.
-        if ((data ?? []).length === 0 && !id && !email && company) {
-          const scan = await db.from("customers").select(columns).limit(CUSTOMER_SCAN_LIMIT);
-          if (scan.error) throw new Error(scan.error.message);
-          data = scan.data;
-        }
         // Every supplied name must agree. A caller who gives the right company and the wrong
         // person is a miss, not a match on the company alone.
         const matches = (data ?? []).filter(
           (r) =>
-            (!company || normaliseCompany(r.company_name as string) === normaliseCompany(company)) &&
-            (!contact || namesAgree(r.contact_name as string, contact)),
+            normaliseCompany(r.company_name as string) === normaliseCompany(company as string) &&
+            namesAgree(r.contact_name as string, contact as string) &&
+            (r.contact_email as string).toLowerCase() === email,
         );
         const row = matches.length === 1 ? matches[0] : null;
         if (!row) return missOutcome(db, conversationId, CUSTOMER_MISS);
@@ -230,6 +222,7 @@ export function registerLookupTools(server: McpServer, db: SupabaseClient, ctx: 
             account_status: row.account_status,
             kyc_status: row.kyc_status,
             support_summary,
+            account_facts: describeAccount(row.plan as string, row.account_status as string, row.kyc_status as string),
             next_step: settled ? "read_support_summary_then_ask_what_they_need" : "read_support_summary_then_offer_specialist_followup",
           },
           summary: `found=true linked settled=${settled}`,

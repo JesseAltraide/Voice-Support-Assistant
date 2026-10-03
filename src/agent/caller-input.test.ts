@@ -1,5 +1,5 @@
-import { describe, expect, it } from "vitest";
-import { classifyInput, isRepeatQuestion } from "./caller-input.js";
+import { describe, expect, it, test } from "vitest";
+import { classifyInput, isClosing, isRepeatQuestion } from "./caller-input.js";
 
 describe("classifyInput", () => {
   it.each([
@@ -74,5 +74,33 @@ describe("isRepeatQuestion", () => {
 
   it("ignores filler words when comparing", () => {
     expect(isRepeatQuestion("so what are the fees then", ["what are the fees"])).toBe(true);
+  });
+});
+
+// Found on a real call: "All right. Thank you very much." never matched FAREWELL (no "bye" or
+// "done" in it) and left the call open with no end marker, even right after the agent asked
+// "is there anything else".
+describe("a plain thank-you after a wrap-up question is a sign-off", () => {
+  const WRAP_UP = "Your callback is arranged. Is there anything else I can help you with?";
+
+  test.each([
+    "All right. Thank you very much.",
+    "Thanks!",
+    "Thank you so much, appreciate it.",
+    "Okay, great, thanks a lot.",
+  ])("closes on %j", (text) => {
+    expect(isClosing(text, WRAP_UP)).toBe(true);
+  });
+
+  test.each([
+    "Thanks, but can you also check my other transaction?",
+    "Thanks, but can you also check my other transaction",
+    "Thank you, I think my payout is still delayed",
+  ])("does not close on %j — a real word slipped in", (text) => {
+    expect(isClosing(text, WRAP_UP)).toBe(false);
+  });
+
+  test("the same gratitude mid-conversation, with no wrap-up question before it, does not close", () => {
+    expect(isClosing("Thank you very much", "Your fees depend on the corridor and currency.")).toBe(false);
   });
 });

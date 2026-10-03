@@ -332,7 +332,7 @@ async function runTurn(p: TurnRequest): Promise<TurnResult> {
     extracted = extractFacts(raw.toolResults);
     derived = deriveAnswerType(parsed.type, extracted.facts);
   }
-  const { facts, groundedTexts } = extracted;
+  const { facts, groundedTexts, accountFacts } = extracted;
   // Claims are checked against records that exist now, including any this turn just created.
   const records = {
     escalationExists: recordsBefore.escalationExists || facts.escalationCreated,
@@ -400,6 +400,7 @@ async function runTurn(p: TurnRequest): Promise<TurnResult> {
         groundedTexts: [...groundedTexts, ...notes],
         forbiddenNames: names,
         records,
+        accountFacts,
       });
 
   let spoken = codeOwned ?? parsed.text;

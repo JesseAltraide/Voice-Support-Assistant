@@ -34,18 +34,18 @@ async function call(name: string, args: Record<string, unknown>) {
  * Lookups are scoped to the verified customer, so a test that skips this is testing what an
  * unidentified stranger can read — which is now nothing.
  */
-const OWNERS: Record<string, [string, string]> = {
-  "CUS-1001": ["lagosledger", "amara@lagosledger.example"],
-  "CUS-1002": ["nairobiops", "daniel@nairobiops.example"],
-  "CUS-1003": ["accrastack", "efua@accrastack.example"],
-  "CUS-1004": ["capecloud", "amina@capecloud.example"],
-  "CUS-1005": ["kigaliworks", "patrick@kigaliworks.example"],
+const OWNERS: Record<string, [string, string, string]> = {
+  "CUS-1001": ["lagosledger", "amara@lagosledger.example", "Amara Okafor"],
+  "CUS-1002": ["nairobiops", "daniel@nairobiops.example", "Daniel Mwangi"],
+  "CUS-1003": ["accrastack", "efua@accrastack.example", "Efua Mensah"],
+  "CUS-1004": ["capecloud", "amina@capecloud.example", "Amina Jacobs"],
+  "CUS-1005": ["kigaliworks", "patrick@kigaliworks.example", "Patrick Ndayisaba"],
 };
 
 /** Verify this call against an account, the way a real call must before any lookup. */
 async function verifyAs(customerId: string) {
-  const [company_name, email] = OWNERS[customerId]!;
-  const { body } = await call("lookup_customer", { company_name, email });
+  const [company_name, email, contact_name] = OWNERS[customerId]!;
+  const { body } = await call("lookup_customer", { company_name, email, contact_name });
   if (body.linked !== true) throw new Error(`test setup: could not verify as ${customerId}`);
 }
 
@@ -182,53 +182,57 @@ describe("lookup_payout", () => {
 });
 
 describe("lookup_customer", () => {
-  it("links with two agreeing identifiers and returns a summary that is safe to read out", async () => {
-    const { body } = await call("lookup_customer", { company_name: "lagosledger", email: "amara@lagosledger.example" });
+  const ALL = { company_name: "lagosledger", email: "amara@lagosledger.example", contact_name: "Amara Okafor" };
+
+  it("links when email, name and company all agree, and returns a summary that is safe to read out", async () => {
+    const { body } = await call("lookup_customer", ALL);
     expect(body.found).toBe(true);
     expect(body.linked).toBe(true);
-    // The spec's fields are returned; support_summary is the only one meant to be spoken.
     expect(body.customer_id).toBe("CUS-1001");
     expect(typeof body.support_summary).toBe("string");
-    expect((body.support_summary as string).length).toBeGreaterThan(0);
-    // Support's own notes about the caller never leave the tool at all.
     expect(body.support_notes).toBeUndefined();
     const { data } = await db.from("conversations").select("linked_customer_id").eq("id", conversationId).single();
     expect(data?.linked_customer_id).toBe("CUS-1001");
   });
 
-  it("the spoken summary never states the plan, the status or the verification state", async () => {
-    const { body } = await call("lookup_customer", { company_name: "lagosledger", email: "amara@lagosledger.example" });
+  it("support_summary itself never states the plan, the status or the verification state", async () => {
+    const { body } = await call("lookup_customer", ALL);
     const spoken = (body.support_summary as string).toLowerCase();
     for (const leak of ["growth", "starter", "scale", "restricted", "pending", "review required", "approved", "kyc"]) {
       expect(spoken).not.toContain(leak);
     }
   });
 
-  // The caller's own name counts towards "enough identifying information", which is what the
-  // brief's example supplies: "I am Amara from LagosLedger".
-  it("a first name and a company are enough, as in the brief's own example", async () => {
-    const { body } = await call("lookup_customer", { contact_name: "Amara", company_name: "LagosLedger" });
-    expect(body.found).toBe(true);
-    expect(body.customer_id).toBe("CUS-1001");
-    expect(typeof body.support_summary).toBe("string");
+  it("account_facts carries plan, status and verification in plain words, and nothing private", async () => {
+    const { body } = await call("lookup_customer", ALL);
+    expect(body.account_facts).toBe("Their plan is Growth. Their account status is active. Their verification status is approved.");
+    expect(JSON.stringify(body)).not.toMatch(/normal support access|balance|amara@/i);
   });
 
-  it("negative: one identifier is not enough and does not reveal whether the company exists", async () => {
+  it("a caller who only says the company is matched using the name and email stored from the form", async () => {
+    await db.from("conversations").update({ caller_name: "Amara Okafor", caller_email: "amara@lagosledger.example" }).eq("id", conversationId);
+    const { body } = await call("lookup_customer", { company_name: "LagosLedger" });
+    expect(body.linked).toBe(true);
+    expect(body.customer_id).toBe("CUS-1001");
+  });
+
+  it("negative: the company alone, with nothing on the form, finds nothing and reveals nothing", async () => {
     const { body } = await call("lookup_customer", { company_name: "LagosLedger" });
     expect(body.found).toBe(false);
     expect(body.customer_id).toBeNull();
     expect(body.support_summary).toBeNull();
+    expect(body.account_facts).toBeUndefined();
   });
 
-  it("negative: the right company with the wrong person finds nothing", async () => {
-    const { body } = await call("lookup_customer", { contact_name: "Chidi", company_name: "LagosLedger" });
+  it("negative: two of three agreeing is not enough", async () => {
+    const { body } = await call("lookup_customer", { ...ALL, email: "efua@accrastack.example" });
+    expect(body.found).toBe(false);
+  });
+
+  it("negative: the right company and email with the wrong person finds nothing", async () => {
+    const { body } = await call("lookup_customer", { ...ALL, contact_name: "Chidi Obi" });
     expect(body.found).toBe(false);
     expect(body.customer_id).toBeNull();
-  });
-
-  it("negative: two identifiers that belong to different customers find nothing", async () => {
-    const { body } = await call("lookup_customer", { company_name: "LagosLedger", email: "efua@accrastack.example" });
-    expect(body.found).toBe(false);
   });
 });
 
@@ -399,5 +403,29 @@ describe("a lookup is scoped to the caller's own account", () => {
     expect(typeof txn.body.support_summary).toBe("string");
     const pay = await call("lookup_payout", { payout_id: "PAY-7001" });
     expect(pay.body.found).toBe(true);
+  });
+});
+
+describe("check_callback_availability with no time lists what is open", () => {
+  it("returns up to three open slots on different days, each readable two ways", async () => {
+    const { body } = await call("check_callback_availability", {});
+    const slots = body.open_slots as Array<{ slot_start: string; reads_as: string; reads_as_spoken: string }>;
+    expect(slots.length).toBeGreaterThan(0);
+    expect(slots.length).toBeLessThanOrEqual(3);
+    const days = new Set(slots.map((s) => s.slot_start.slice(0, 10)));
+    expect(days.size).toBe(slots.length);
+    for (const s of slots) {
+      expect(new Date(s.slot_start).getTime()).toBeGreaterThan(Date.now());
+      expect(s.reads_as.length).toBeGreaterThan(0);
+      expect(s.reads_as_spoken).toMatch(/in the (morning|afternoon)|noon/);
+    }
+  });
+
+  it("every slot it offers is one the booking rules accept", async () => {
+    const { body } = await call("check_callback_availability", {});
+    for (const s of body.open_slots as Array<{ slot_start: string }>) {
+      const check = await call("check_callback_availability", { requested_time: s.slot_start });
+      expect(check.body.available).toBe(true);
+    }
   });
 });

@@ -137,6 +137,8 @@ export interface GuardInput {
   forbiddenNames: string[];
   /** Records that actually exist, so a claim can be checked against a fact rather than trusted. */
   records?: GuardRecords;
+  /** Plain-words account facts a verified lookup returned this turn. Only these may be spoken. */
+  accountFacts?: string[];
 }
 
 export interface GuardResult {
@@ -382,11 +384,22 @@ function unnegatedMatch(norm: string, pattern: RegExp): boolean {
     });
 }
 
-function disclosesAccountState(norm: string): boolean {
-  if (COMPLIANCE_ACTION.test(norm) || ACCOUNT_NOTES.test(norm) || PLAN_NAME.test(norm)) return true;
+function disclosesAccountState(norm: string, accountFacts: string[] = []): boolean {
+  // Notes and compliance explanations are never speakable, verified or not.
+  if (COMPLIANCE_ACTION.test(norm) || ACCOUNT_NOTES.test(norm)) return true;
+  const allowed = normalise(accountFacts.join(" "));
+  // A verified caller may hear only the plan and state words the lookup actually returned.
+  const permitted = (word: string): boolean => allowed.length > 0 && wordRe(word).test(allowed);
+  const plan = norm.match(new RegExp(PLAN_NAME.source, "g")) ?? [];
+  if (plan.some((w) => !permitted(w))) return true;
   return norm
     .split(/(?<=[.!?])\s+/)
-    .some((s) => !STARTS_CONDITIONAL.test(s) && ACCOUNT_SUBJECT.test(s) && STATE_WORD.test(s));
+    .some(
+      (s) =>
+        !STARTS_CONDITIONAL.test(s) &&
+        ACCOUNT_SUBJECT.test(s) &&
+        (s.match(new RegExp(STATE_WORD.source, "g")) ?? []).some((w) => !permitted(w)),
+    );
 }
 
 // ---- the guard ----------------------------------------------------------------------------
@@ -438,7 +451,7 @@ export function checkReply(input: GuardInput): GuardResult {
     }
   }
 
-  if (disclosesAccountState(norm)) reasons.add("record_field");
+  if (disclosesAccountState(norm, input.accountFacts)) reasons.add("record_field");
 
   const backed = input.records?.escalationExists === true || input.records?.ticketExists === true;
   if (!backed && unnegatedMatch(norm, RECORD_CLAIM)) reasons.add("unbacked_claim");

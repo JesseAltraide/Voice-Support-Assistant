@@ -2,12 +2,15 @@ import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import type { SupabaseClient } from "@supabase/supabase-js";
 import { z } from "zod";
 import {
-  bookableSlots, describeSlot, REFUSAL_REASON, slotRefusal,
+  bookableSlots, describeSlot, describeSlotSpoken, REFUSAL_REASON, slotRefusal,
   SLOT_CAPACITY, SLOT_MINUTES, SUPPORT_TIMEZONE,
 } from "./callback-slots.js";
 import { sendCallerEmail } from "../agent/handoff-email.js";
 import type { ToolContext } from "./context.js";
 import { runTool } from "./instrument.js";
+
+/** Days of open times to offer when the caller has not named one. */
+const OPEN_DAYS = 3;
 
 /** How many alternatives to offer. More than three is a list nobody can hold in their head. */
 const MAX_ALTERNATIVES = 3;
@@ -102,14 +105,34 @@ async function alternatives(db: SupabaseClient, around: Date, now: Date, zone: s
   // morning, not whatever happens to be earliest in the week.
   candidates.sort((a, b) => Math.abs(a.getTime() - around.getTime()) - Math.abs(b.getTime() - around.getTime()));
 
-  const free: Array<{ slot_start: string; reads_as: string }> = [];
+  const free: Array<{ slot_start: string; reads_as: string; reads_as_spoken: string }> = [];
   for (const slot of candidates) {
     if (free.length >= MAX_ALTERNATIVES) break;
     if ((await bookedAt(db, slot)) < SLOT_CAPACITY) {
-      free.push({ slot_start: slot.toISOString(), reads_as: describeSlot(slot, zone) });
+      // Both forms are grounding: whichever one the agent happens to read an alternative back
+      // in, the guard must recognise it as a real figure, not an invented one.
+      free.push({ slot_start: slot.toISOString(), reads_as: describeSlot(slot, zone), reads_as_spoken: describeSlotSpoken(slot, zone) });
     }
   }
   return free;
+}
+
+/**
+ * The first free slot on each of the next few days, so a caller who has not named a time can be
+ * told what is actually open instead of guessing at a schedule they cannot see.
+ */
+async function openSlots(db: SupabaseClient, now: Date, zone: string | null) {
+  const dayOf = (slot: Date): string => slot.toLocaleDateString("en-CA", { timeZone: zone ?? SUPPORT_TIMEZONE });
+  const seenDays = new Set<string>();
+  const open: Array<{ slot_start: string; reads_as: string; reads_as_spoken: string }> = [];
+  for (const slot of bookableSlots(now)) {
+    if (open.length >= OPEN_DAYS) break;
+    if (seenDays.has(dayOf(slot))) continue;
+    if ((await bookedAt(db, slot)) >= SLOT_CAPACITY) continue;
+    seenDays.add(dayOf(slot));
+    open.push({ slot_start: slot.toISOString(), reads_as: describeSlot(slot, zone), reads_as_spoken: describeSlotSpoken(slot, zone) });
+  }
+  return open;
 }
 
 const parseSlot = (raw: string): Date | null => {
@@ -122,17 +145,25 @@ export function registerCallbackTools(server: McpServer, db: SupabaseClient, ctx
     "check_callback_availability",
     {
       description:
-        "Check whether support can call the caller back at a time they asked for. Pass the time as a full ISO instant in UTC, worked out from what they said. Always check before agreeing to anything: a time that is not free must never be promised. Returns alternatives when the answer is no.",
+        "Check whether support can call the caller back at a time they asked for. Pass the time as a full ISO instant in UTC, worked out from what they said. Always check before agreeing to anything: a time that is not free must never be promised. Returns alternatives when the answer is no. Call it with NO requested_time to get open_slots: the next free time on each of the next few days, to offer before the caller has named one.",
       inputSchema: {
         requested_time: z
           .string()
           .max(40)
-          .describe("The caller's requested time as a full ISO-8601 UTC instant, for example 2026-10-06T09:00:00Z."),
+          .optional()
+          .describe("The caller's requested time as a full ISO-8601 UTC instant, for example 2026-10-06T09:00:00Z. Leave out to list the open times."),
       },
     },
     async (args) =>
       runTool(db, ctx, "check_callback_availability", "see whether a callback time is free", "requested time supplied", async (conversationId) => {
         const conv = await conversationContext(db, conversationId);
+        if (!args.requested_time) {
+          const open_slots = await openSlots(db, new Date(), conv.caller_timezone);
+          return {
+            result: { open_slots, next_step: "offer_these_open_times_then_ask_which_suits_or_for_another_time_in_the_window" },
+            summary: `open_slots=${open_slots.length}`,
+          };
+        }
         const slot = parseSlot(args.requested_time);
         if (!slot) {
           return {
@@ -149,6 +180,7 @@ export function registerCallbackTools(server: McpServer, db: SupabaseClient, ctx
               available: true,
               slot_start: slot.toISOString(),
               reads_as: describeSlot(slot, conv.caller_timezone),
+              reads_as_spoken: describeSlotSpoken(slot, conv.caller_timezone),
               next_step: "read_the_time_back_and_book_it_if_they_agree",
             },
             summary: "available=true",
@@ -242,6 +274,7 @@ export function registerCallbackTools(server: McpServer, db: SupabaseClient, ctx
             booked: true,
             slot_start: slot.toISOString(),
             reads_as: describeSlot(slot, conv.caller_timezone),
+            reads_as_spoken: describeSlotSpoken(slot, conv.caller_timezone),
             support_timezone: SUPPORT_TIMEZONE,
             next_step: "tell_them_the_callback_is_arranged_and_read_the_time_back",
           },

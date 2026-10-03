@@ -13,42 +13,59 @@ const typed = (over: Partial<{ email: string | null; name: string | null; compan
   ...over,
 });
 
-describe("two of three agreeing identifiers verifies outright", () => {
-  it("email and name both matching the same account verifies, no company needed", () => {
-    const r = verifyCaller(CUSTOMERS, typed({ email: "amara@lagosledger.example", name: "Amara" }));
+describe("all three identifiers must agree to verify", () => {
+  it("email, name and company all matching the same account verifies", () => {
+    const r = verifyCaller(CUSTOMERS, typed({ email: "amara@lagosledger.example", name: "Amara", company: "LagosLedger" }));
     expect(r).toEqual({ state: "verified", customerId: "CUS-1001" });
   });
 
-  it("email and company both matching verifies, even if name was never given", () => {
-    const r = verifyCaller(CUSTOMERS, typed({ email: "amara@lagosledger.example", company: "LagosLedger" }));
+  it("two of three agreeing, company given and correct, still verifies", () => {
+    const r = verifyCaller(CUSTOMERS, typed({ email: "amara@lagosledger.example", name: "Amara Okafor", company: "lagosledger" }));
     expect(r.state).toBe("verified");
   });
 
-  it("name and company both matching verifies even with no email typed", () => {
-    const r = verifyCaller(CUSTOMERS, typed({ name: "Amara Okafor", company: "lagosledger" }));
-    expect(r.state).toBe("verified");
+  it("two agreeing is no longer enough on its own — company omitted means not yet verified", () => {
+    const r = verifyCaller(CUSTOMERS, typed({ email: "amara@lagosledger.example", name: "Amara" }));
+    expect(r.state).not.toBe("verified");
   });
 });
 
-describe("exactly one identifier agreeing, with no company given, asks for the company", () => {
-  it("name matches, email does not, company was never asked — unconfirmed, not guest", () => {
-    const r = verifyCaller(CUSTOMERS, typed({ email: "wrong@nowhere.test", name: "Amara" }));
+describe("email and name agreeing, company never given, asks for the company", () => {
+  it("both mandatory fields match, company omitted — unconfirmed, not guest", () => {
+    const r = verifyCaller(CUSTOMERS, typed({ email: "amara@lagosledger.example", name: "Amara" }));
     expect(r).toEqual({ state: "unconfirmed", customerId: null });
   });
 
-  it("only the email matches — still unconfirmed until company is checked", () => {
-    const r = verifyCaller(CUSTOMERS, typed({ email: "amara@lagosledger.example", name: "Someone Else" }));
+  it("the same, with the full recorded name instead of a first name", () => {
+    const r = verifyCaller(CUSTOMERS, typed({ email: "amara@lagosledger.example", name: "Amara Okafor" }));
     expect(r.state).toBe("unconfirmed");
   });
 });
 
-describe("a guest, with nothing left worth asking", () => {
-  it("company was already given and still only one field agreed — no second question to ask", () => {
-    const r = verifyCaller(CUSTOMERS, typed({ email: "amara@lagosledger.example", name: "Someone Else", company: "Wrong Co" }));
+describe("only one of the two mandatory fields agreeing is a guest, not unconfirmed", () => {
+  it("email matches, name does not — company could never bring this to three either way", () => {
+    const r = verifyCaller(CUSTOMERS, typed({ email: "amara@lagosledger.example", name: "Someone Else" }));
     expect(r).toEqual({ state: "guest", customerId: null });
   });
 
-  it("neither email nor name matches any account — a correct company could never reach two anyway", () => {
+  it("name matches, email does not", () => {
+    const r = verifyCaller(CUSTOMERS, typed({ email: "wrong@nowhere.test", name: "Amara" }));
+    expect(r.state).toBe("guest");
+  });
+});
+
+describe("a guest, with nothing left worth asking", () => {
+  it("company was already given and still not all three agree — no second question to ask", () => {
+    const r = verifyCaller(CUSTOMERS, typed({ email: "amara@lagosledger.example", name: "Amara", company: "Wrong Co" }));
+    expect(r).toEqual({ state: "guest", customerId: null });
+  });
+
+  it("email and name both match, but company was given and wrong — still guest, not asked again", () => {
+    const r = verifyCaller(CUSTOMERS, typed({ email: "amara@lagosledger.example", name: "Amara Okafor", company: "Totally Different Co" }));
+    expect(r.state).toBe("guest");
+  });
+
+  it("neither email nor name matches any account", () => {
     const r = verifyCaller(CUSTOMERS, typed({ email: "nobody@nowhere.test", name: "Nobody At All" }));
     expect(r).toEqual({ state: "guest", customerId: null });
   });
@@ -64,27 +81,27 @@ describe("a guest, with nothing left worth asking", () => {
 });
 
 describe("name matching is first-name tolerant, the same rule lookup_customer already uses", () => {
-  it("a bare first name agrees with the full recorded name", () => {
-    const r = verifyCaller(CUSTOMERS, typed({ email: "amara@lagosledger.example", name: "amara" }));
+  it("a bare first name still agrees with the full recorded name, for the purpose of reaching three", () => {
+    const r = verifyCaller(CUSTOMERS, typed({ email: "amara@lagosledger.example", name: "amara", company: "LagosLedger" }));
     expect(r.state).toBe("verified");
   });
 
   it("a different person's name does not agree just because it's a real name", () => {
-    const r = verifyCaller(CUSTOMERS, typed({ email: "amara@lagosledger.example", name: "Daniel" }));
-    expect(r.state).toBe("unconfirmed");
+    const r = verifyCaller(CUSTOMERS, typed({ email: "amara@lagosledger.example", name: "Daniel", company: "LagosLedger" }));
+    expect(r.state).toBe("guest");
   });
 });
 
 describe("company matching is case- and spacing-insensitive, consistent with lookup_customer", () => {
   it("different case and extra spacing still agree", () => {
-    const r = verifyCaller(CUSTOMERS, typed({ name: "Amara", company: "  lagosLEDGER  " }));
+    const r = verifyCaller(CUSTOMERS, typed({ email: "amara@lagosledger.example", name: "Amara", company: "  lagosLEDGER  " }));
     expect(r.state).toBe("verified");
   });
 });
 
 describe("the best-matching account wins when candidates disagree", () => {
   it("picks the customer with the higher score, not merely the first row", () => {
-    const r = verifyCaller(CUSTOMERS, typed({ email: "daniel@nairobiops.example", name: "Daniel Mwangi" }));
+    const r = verifyCaller(CUSTOMERS, typed({ email: "daniel@nairobiops.example", name: "Daniel Mwangi", company: "NairobiOps" }));
     expect(r).toEqual({ state: "verified", customerId: "CUS-1002" });
   });
 });
@@ -104,7 +121,7 @@ describe("a tie at the winning score never picks a customer arbitrarily", () => 
     expect(r.customerId).toBeNull();
   });
 
-  it("the same tie is still a guest, not unconfirmed — company was already given and didn't disambiguate", () => {
+  it("the same tie is a guest, not unconfirmed — company was already given and didn't disambiguate", () => {
     const r = verifyCaller(TIED, typed({ name: "Chris", company: "Acme Corp" }));
     expect(r.state).toBe("guest");
   });
@@ -115,14 +132,12 @@ describe("a tie at the winning score never picks a customer arbitrarily", () => 
   });
 
   it("a tie at score 1 does not falsely invite a company question pointed at one candidate", () => {
-    // Two different customers both happen to be named "Chris" at different companies; nothing
-    // else typed. Still ties at 1, and the eventual lookup_customer call enforces its own
-    // uniqueness check regardless, but this must not silently prefer one of them either.
     const sameFirstName: CustomerCandidate[] = [
       { customer_id: "CUS-A", contact_email: "a@one.example", contact_name: "Chris Adeyemi", company_name: "One Co" },
       { customer_id: "CUS-B", contact_email: "b@two.example", contact_name: "Chris Baptiste", company_name: "Two Co" },
     ];
     const r = verifyCaller(sameFirstName, typed({ name: "Chris" }));
     expect(r.customerId).toBeNull();
+    expect(r.state).toBe("guest");
   });
 });

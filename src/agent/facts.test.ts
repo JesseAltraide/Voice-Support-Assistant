@@ -75,3 +75,79 @@ describe("extractFacts", () => {
     expect(r.facts.groundedSearch).toBe(true);
   });
 });
+
+// Found on a real call: a successfully booked time was refused by the speech guard as an
+// invented number, because the booking tools' results were never added to groundedTexts at all —
+// not the digit form, not the spoken form, not the alternatives. Confirming the real gap closed.
+describe("callback tool results ground the time they returned", () => {
+  const ok = { isError: false } as const;
+
+  it("book_callback's reads_as and reads_as_spoken are both grounded", () => {
+    const { groundedTexts } = extractFacts([{
+      ...ok, name: "mcp__relaypay__book_callback",
+      data: { booked: true, reads_as: "Wednesday 7 October, 15:00", reads_as_spoken: "Wednesday 7 October at 3 in the afternoon" },
+    }]);
+    expect(groundedTexts).toContain("Wednesday 7 October, 15:00");
+    expect(groundedTexts).toContain("Wednesday 7 October at 3 in the afternoon");
+  });
+
+  it("check_callback_availability's alternatives are each grounded, both forms", () => {
+    const { groundedTexts } = extractFacts([{
+      ...ok, name: "mcp__relaypay__check_callback_availability",
+      data: {
+        available: false,
+        alternatives: [
+          { slot_start: "x", reads_as: "Friday 9 October, 16:30", reads_as_spoken: "Friday 9 October at 4:30 in the afternoon" },
+        ],
+      },
+    }]);
+    expect(groundedTexts).toContain("Friday 9 October, 16:30");
+    expect(groundedTexts).toContain("Friday 9 October at 4:30 in the afternoon");
+  });
+
+  it("a failed tool call grounds nothing", () => {
+    const { groundedTexts } = extractFacts([{
+      name: "mcp__relaypay__book_callback", isError: true,
+      data: { booked: true, reads_as: "Monday 5 October, 10:00" },
+    }]);
+    expect(groundedTexts).toEqual([]);
+  });
+});
+
+describe("account facts are only collected from a lookup that linked the caller", () => {
+  const FACTS = "Their plan is Growth. Their account status is active. Their verification status is approved.";
+  it("collects account_facts when found and linked", () => {
+    const { accountFacts } = extractFacts([{
+      name: "mcp__relaypay__lookup_customer", isError: false,
+      data: { found: true, linked: true, support_summary: "The account is open and verification is complete.", account_facts: FACTS },
+    }]);
+    expect(accountFacts).toEqual([FACTS]);
+  });
+
+  it("collects nothing when the lookup did not link", () => {
+    const { accountFacts } = extractFacts([{
+      name: "mcp__relaypay__lookup_customer", isError: false,
+      data: { found: false, linked: false, account_facts: FACTS },
+    }]);
+    expect(accountFacts).toEqual([]);
+  });
+
+  it("ignores account_facts on a failed call", () => {
+    const { accountFacts } = extractFacts([{
+      name: "mcp__relaypay__lookup_customer", isError: true,
+      data: { found: true, linked: true, support_summary: "x", account_facts: FACTS },
+    }]);
+    expect(accountFacts).toEqual([]);
+  });
+});
+
+describe("open callback slots are grounded in both spoken forms", () => {
+  it("grounds every offered open slot", () => {
+    const { groundedTexts } = extractFacts([{
+      name: "mcp__relaypay__check_callback_availability", isError: false,
+      data: { open_slots: [{ slot_start: "x", reads_as: "Monday 5 October, 09:00", reads_as_spoken: "Monday 5 October at 9 in the morning" }] },
+    }]);
+    expect(groundedTexts).toContain("Monday 5 October, 09:00");
+    expect(groundedTexts).toContain("Monday 5 October at 9 in the morning");
+  });
+});

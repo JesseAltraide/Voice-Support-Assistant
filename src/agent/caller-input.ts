@@ -82,8 +82,20 @@ export function isClosing(text: string, lastAssistant?: string | null): boolean 
 
   if (FAREWELL.test(t)) return true;
   if (NOTHING_FURTHER.test(t) && !STILL_ANSWERING.test(t)) return true;
-  return BARE_ACK.test(t) && !!lastAssistant && WRAP_UP_QUESTION.test(normaliseClosing(lastAssistant));
+  const afterWrapUp = !!lastAssistant && WRAP_UP_QUESTION.test(normaliseClosing(lastAssistant));
+  if (BARE_ACK.test(t) && afterWrapUp) return true;
+  // A caller who just says thanks, with nothing else, right after being asked if there's
+  // anything further, is signing off — "All right. Thank you very much." never matched FAREWELL
+  // (no "bye" or "done") and left the call open with no marker to end it. Only counts when every
+  // word in the utterance is plain gratitude or filler; the moment a real word slips in
+  // ("thanks, but can you also check...") this is not a sign-off and must not be read as one.
+  return afterWrapUp && t.split(" ").every((w) => CLOSING_FILLER.has(w));
 }
+
+const CLOSING_FILLER = new Set([
+  "all", "right", "alright", "ok", "okay", "great", "good", "thanks", "thank", "you", "very",
+  "much", "so", "a", "lot", "appreciate", "it", "cheers",
+]);
 
 // Confirmations, greetings and sign-offs repeat constantly and ask nothing. Repeated greetings are
 // handled separately by the no-progress limit, not treated as an unanswered question.

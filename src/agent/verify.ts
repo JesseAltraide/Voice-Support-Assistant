@@ -22,12 +22,14 @@ export interface VerifyResult {
 }
 
 /**
- * Two of three agreeing identifiers (email, name, company) link the call to that account outright.
- * Exactly one agreeing, with company never given, leaves room to ask for it. Anything else is a
- * guest: if company was already given and still only one field agreed, there is nothing left to
- * ask, and if neither email nor name agreed with any customer at all, a correct company could
- * never raise the count past one either, so asking for it would only cost the caller a question
- * with no possible good answer.
+ * All three of email, name and company must agree with the same customer to verify the caller.
+ * Email and name are mandatory on the form, so the only field that can ever be missing is
+ * company — if both of the mandatory two already agree and company was simply never typed,
+ * that is worth one spoken question rather than an immediate guest verdict. Anything less is a
+ * guest: if company was already given and the three still do not all agree, there is nothing
+ * left to ask, and if even one of email or name is wrong, a correct company could never bring
+ * the count to three either, so asking would only cost the caller a question with no possible
+ * good answer.
  */
 export function verifyCaller(
   candidates: CustomerCandidate[],
@@ -54,11 +56,13 @@ export function verifyCaller(
   // sharing a company name, say, with a first name that tolerantly matches both. Picking
   // whichever row the query happened to return first would link the call to a specific
   // customer's records on the strength of an ambiguity, not an identification.
-  if (bestScore >= 2 && tiedAtBest === 1) return { state: "verified", customerId: bestId };
-  // A tie at score 1 is not the same risk: "unconfirmed" never attaches a customerId here, and
-  // the lookup_customer call that follows re-checks its own two-identifier agreement with its
-  // own uniqueness rule before anything links. Scoring the account the email actually matched
-  // is still meaningful even if an unrelated row happens to share the typed name by coincidence.
-  if (bestScore >= 1 && typed.company === null) return { state: "unconfirmed", customerId: null };
+  if (bestScore === 3 && tiedAtBest === 1) return { state: "verified", customerId: bestId };
+  // Company is the only field that can ever be missing (email and name are mandatory on the
+  // form), so a score of 2 with company null can only mean email and name both already agree
+  // with the same customer — worth asking for company rather than an immediate guest verdict.
+  // A tie here is not the same risk as a tie at 3: "unconfirmed" never attaches a customerId,
+  // and the lookup_customer call that follows re-checks its own agreement and uniqueness before
+  // anything links.
+  if (bestScore === 2 && typed.company === null) return { state: "unconfirmed", customerId: null };
   return { state: "guest", customerId: null };
 }
