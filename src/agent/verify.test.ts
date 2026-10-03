@@ -141,3 +141,15 @@ describe("a tie at the winning score never picks a customer arbitrarily", () => 
     expect(r.state).toBe("guest");
   });
 });
+
+describe("company said by voice as speech-to-text writes it", () => {
+  it("'Lagos Ledger' agrees with 'LagosLedger'", () => {
+    const r = verifyCaller(CUSTOMERS, typed({ email: "amara@lagosledger.example", name: "Amara Okafor", company: "Lagos Ledger" }));
+    expect(r.state).toBe("verified");
+  });
+
+  it("punctuation and spacing differences do not matter, a different company still does", () => {
+    expect(verifyCaller(CUSTOMERS, typed({ email: "daniel@nairobiops.example", name: "Daniel", company: "Nairobi Ops." })).state).toBe("verified");
+    expect(verifyCaller(CUSTOMERS, typed({ email: "amara@lagosledger.example", name: "Amara", company: "Lagos Ledgers" })).state).toBe("guest");
+  });
+});

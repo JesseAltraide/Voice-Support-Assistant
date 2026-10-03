@@ -49,6 +49,26 @@ const log = (what: string) => (err: unknown) => console.error(`${what}:`, err in
 
 const sessions = new Map<string, AgentSession>();
 
+/**
+ * What this call's recent turns retrieved, kept so a turn the caller interrupted does not strand
+ * its own knowledge. Speech arrives in pieces ("about international." then "payments."): the
+ * first piece runs the search and is abandoned, the second reuses what the model already read,
+ * and a guard that only trusted this turn's search blocked a correct, quoted answer as invented.
+ */
+const RECENT_GROUNDING_TURNS = 3;
+// Bounded, so conversations that end without being disposed cannot grow it without limit.
+const MAX_GROUNDED_CONVERSATIONS = 500;
+const recentGrounding = new Map<string, string[][]>();
+const priorGrounding = (id: string): string[] => (recentGrounding.get(id) ?? []).flat();
+function rememberGrounding(id: string, texts: string[]): void {
+  if (texts.length === 0) return;
+  recentGrounding.set(id, [...(recentGrounding.get(id) ?? []), texts].slice(-RECENT_GROUNDING_TURNS));
+  if (recentGrounding.size > MAX_GROUNDED_CONVERSATIONS) {
+    const oldest = recentGrounding.keys().next().value;
+    if (oldest !== undefined) recentGrounding.delete(oldest);
+  }
+}
+
 function sessionFor(id: string): { session: AgentSession; isNew: boolean } {
   const existing = sessions.get(id);
   if (existing && !existing.dead) return { session: existing, isNew: false };
@@ -73,6 +93,7 @@ export function warmSession(conversationId: string): void {
 export async function disposeSession(id: string): Promise<void> {
   const s = sessions.get(id);
   sessions.delete(id);
+  recentGrounding.delete(id);
   await s?.close();
 }
 
@@ -333,6 +354,8 @@ async function runTurn(p: TurnRequest): Promise<TurnResult> {
     derived = deriveAnswerType(parsed.type, extracted.facts);
   }
   const { facts, groundedTexts, accountFacts } = extracted;
+  const earlierGrounding = priorGrounding(id);
+  rememberGrounding(id, groundedTexts);
   // Claims are checked against records that exist now, including any this turn just created.
   const records = {
     escalationExists: recordsBefore.escalationExists || facts.escalationCreated,
@@ -397,7 +420,7 @@ async function runTurn(p: TurnRequest): Promise<TurnResult> {
         // prompt then orders the agent to say — the current date, and the hours a callback can be
         // booked. Without this the guard blocked "between 08:00 and 17:00" as an invented number,
         // which is the server contradicting itself at the caller's expense.
-        groundedTexts: [...groundedTexts, ...notes],
+        groundedTexts: [...groundedTexts, ...earlierGrounding, ...notes],
         forbiddenNames: names,
         records,
         accountFacts,

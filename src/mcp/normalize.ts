@@ -33,9 +33,10 @@ const MONTHS = [
   "July", "August", "September", "October", "November", "December",
 ];
 
-/** Case- and spacing-insensitive. Shared so a company typed on the form and one said by voice
- *  are judged by the exact same rule lookup_customer already uses. */
-export const normaliseCompany = (s: string): string => s.trim().toLowerCase().replace(/\s+/g, " ");
+/** Case-, spacing- and punctuation-insensitive, so "Lagos Ledger" as speech-to-text writes it matches
+ *  "LagosLedger" as it is on file. Shared so a company typed on the form and one said by voice are
+ *  judged by the exact same rule. */
+export const normaliseCompany = (s: string): string => s.toLowerCase().replace(/[^\p{L}\p{N}]+/gu, "");
 
 /**
  * Whether a supplied name is consistent with the one on a record.

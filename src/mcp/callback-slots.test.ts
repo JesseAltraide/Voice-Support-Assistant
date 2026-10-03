@@ -1,5 +1,6 @@
 import { describe, expect, test } from "vitest";
 import {
+  isRealTimeZone,
   bookableSlots, describeSlot, describeWindow, REFUSAL_REASON, slotRefusal, slotRuleRefusal,
   HORIZON_DAYS, LEAD_TIME_MINUTES, SLOT_CAPACITY, SUPPORT_TIMEZONE,
 } from "./callback-slots.js";
@@ -171,5 +172,17 @@ describe("the window is sayable as well as correct", () => {
 
   test("the spoken form follows the caller's own zone too", () => {
     expect(describeWindow("Africa/Nairobi", NOW)).toContain("7 in the evening");
+  });
+});
+
+describe("isRealTimeZone", () => {
+  test("accepts real IANA zones", () => {
+    expect(isRealTimeZone("Africa/Lagos")).toBe(true);
+    expect(isRealTimeZone("America/Argentina/Buenos_Aires")).toBe(true);
+  });
+  test("rejects well-shaped but unknown zones, and empty input", () => {
+    expect(isRealTimeZone("Foo/Bar")).toBe(false);
+    expect(isRealTimeZone("")).toBe(false);
+    expect(isRealTimeZone("not a zone")).toBe(false);
   });
 });

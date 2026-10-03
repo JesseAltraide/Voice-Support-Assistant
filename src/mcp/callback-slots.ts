@@ -205,3 +205,14 @@ export const REFUSAL_REASON: Record<SlotRefusal, string> = {
   not_on_the_half_hour: "callbacks start on the hour or the half hour",
   full: "that time is already full",
 };
+
+/** Whether the runtime knows this IANA zone. A well-shaped but unknown zone throws in Intl, so it is checked, not pattern-matched. */
+export function isRealTimeZone(zone: string): boolean {
+  if (!zone) return false;
+  try {
+    new Intl.DateTimeFormat("en-GB", { timeZone: zone });
+    return true;
+  } catch {
+    return false;
+  }
+}

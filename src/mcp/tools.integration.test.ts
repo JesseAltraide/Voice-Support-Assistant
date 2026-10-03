@@ -429,3 +429,11 @@ describe("check_callback_availability with no time lists what is open", () => {
     }
   });
 });
+
+describe("lookup_customer tolerates how speech-to-text splits a company name", () => {
+  it("'Lagos Ledger' links the same account as 'LagosLedger'", async () => {
+    const { body } = await call("lookup_customer", { company_name: "Lagos Ledger", email: "amara@lagosledger.example", contact_name: "Amara Okafor" });
+    expect(body.linked).toBe(true);
+    expect(body.customer_id).toBe("CUS-1001");
+  });
+});

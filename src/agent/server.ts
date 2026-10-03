@@ -1,7 +1,7 @@
 import { timingSafeEqual } from "node:crypto";
 import { fileURLToPath } from "node:url";
 import express, { type NextFunction, type Request, type Response } from "express";
-import { describeSlot, SUPPORT_TIMEZONE } from "../mcp/callback-slots.js";
+import { describeSlot, isRealTimeZone, SUPPORT_TIMEZONE } from "../mcp/callback-slots.js";
 import { draftPayload } from "./draft.js";
 import { buildTranscript } from "./transcript.js";
 import { type CustomerCandidate, verifyCaller, type VerifyState } from "./verify.js";
@@ -230,7 +230,7 @@ app.post("/call/details", rateLimitPublic, express.json({ limit: "4kb" }), async
   }
   // IANA zones only, so what reaches the record can be read back as a time.
   const zone = str(body.timezone, 64);
-  const timezone = /^[A-Za-z]+\/[A-Za-z_+-]+(\/[A-Za-z_+-]+)?$/.test(zone) ? zone : null;
+  const timezone = isRealTimeZone(zone) ? zone : null;
   // Optional, and validated only for length. An empty box must never cost the caller their call,
   // so unlike the name and email these can never produce a 400.
   const company = str(body.company, 120) || null;
