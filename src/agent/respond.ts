@@ -8,7 +8,7 @@ import {
   guardRetryLine, rephraseLine, ERROR_FALLBACK, ERROR_FALLBACK_UNLOGGED, ESCALATED_FALLBACK, NO_PROGRESS_CLOSE, RESOLVED_CLOSE,
   OFF_TOPIC_LINE, SAFE_FALLBACK, STATE_YOUR_PROBLEM, STILL_DIDNT_CATCH, TOOLS_DOWN_FALLBACK,
 } from "./guard.js";
-import { classifyInput, isClosing, isRepeatQuestion } from "./caller-input.js";
+import { classifyInput, isClosing, isPlainAnswer, isRepeatQuestion } from "./caller-input.js";
 import { mcpHealthy } from "./mcp-health.js";
 import { buildNotes } from "./notes.js";
 import { callerMessage, escapeCaller, LOOKUP_FIRST_NOTE, mentionsReference, WORK_FIRST_NOTE } from "./prompt.js";
@@ -49,6 +49,17 @@ const log = (what: string) => (err: unknown) => console.error(`${what}:`, err in
 
 const sessions = new Map<string, AgentSession>();
 
+/** A reply about arranging a call, which is answered from the server's own notes and never needs a search. */
+const CALLBACK_TALK = /(call(ing)? you back|callbacks?|call back)/i;
+
+const PLAIN_ANSWER_REPAIR_NOTE =
+  "The caller said a plain yes or no. It answers what they last heard, which is the line given in the notes about what the caller actually heard. Treat it as that answer and carry on. Do not say you did not catch it.";
+
+const COLLECTING_REASON_NOTE =
+  "A specialist request is being collected and no case exists yet. Whatever the caller says next is the REASON for it, even if it sounds like a question such as \"I'd like to set up my account\". Do not answer it, do not search, and do not explain how to do it. Take it as the reason, say it back in one short sentence, and ask whether that is right. Their name and email are already on file. When they say yes, call create_escalation.";
+const COLLECTING_REASON_REPAIR_NOTE =
+  "Your last draft answered the caller's words as if they were a product question. They are the reason for the specialist request you are collecting. Redo the reply: do not answer or explain, take it as the reason in one short sentence and ask whether that is right.";
+
 /**
  * What this call's recent turns retrieved, kept so a turn the caller interrupted does not strand
  * its own knowledge. Speech arrives in pieces ("about international." then "payments."): the
@@ -66,6 +77,22 @@ function rememberGrounding(id: string, texts: string[]): void {
   if (recentGrounding.size > MAX_GROUNDED_CONVERSATIONS) {
     const oldest = recentGrounding.keys().next().value;
     if (oldest !== undefined) recentGrounding.delete(oldest);
+  }
+}
+
+/**
+ * Whether the last thing the caller heard was the model's own words. False after any turn the
+ * server answered itself (a guard replacement, a rephrase, noise, a close) because the model never
+ * said that line and its session history does not hold it. The next turn is told what was actually
+ * spoken, so a "yes" to the server's own offer has something to answer.
+ */
+const MAX_TRACKED_CONVERSATIONS = 500;
+const lastSpokenWasModel = new Map<string, boolean>();
+function markSpoken(id: string, wasModel: boolean): void {
+  lastSpokenWasModel.set(id, wasModel);
+  if (lastSpokenWasModel.size > MAX_TRACKED_CONVERSATIONS) {
+    const oldest = lastSpokenWasModel.keys().next().value;
+    if (oldest !== undefined) lastSpokenWasModel.delete(oldest);
   }
 }
 
@@ -94,6 +121,7 @@ export async function disposeSession(id: string): Promise<void> {
   const s = sessions.get(id);
   sessions.delete(id);
   recentGrounding.delete(id);
+  lastSpokenWasModel.delete(id);
   await s?.close();
 }
 
@@ -185,6 +213,7 @@ async function codeOwnedTurn(
   transcript: string,
   p: { reply: string; answerType: AnswerType; note: string; countsUnresolved: boolean; ended?: boolean; started: number },
 ): Promise<TurnResult> {
+  markSpoken(conversationId, false);
   const turn = await store.openTurn(conversationId, transcript);
   await Promise.allSettled([
     store.completeTurn(turn.id, { assistant: p.reply, answerType: p.answerType, note: p.note, guardTripped: false }),
@@ -292,7 +321,12 @@ async function runTurn(p: TurnRequest): Promise<TurnResult> {
   const callerAll = [...prior, p.text];
 
   const lastTurn = recent[0];
-  const replacedLast = lastTurn && (lastTurn.guardTripped || lastTurn.answerType === "decline" || lastTurn.answerType === "unintelligible");
+  // The caller has asked for a specialist and no case exists yet, so what they say next is the
+  // reason for the case, however much it sounds like a question ("I'd like to set up my account").
+  // Left to itself the model answers it from memory, the no-retrieval rule replaces that with
+  // "I can't answer that here", and the caller is refused the one thing they asked for.
+  const collectingReason = !recordsBefore.escalationExists && lastTurn?.answerType === "escalate";
+  const replacedLast = lastTurn !== undefined && lastSpokenWasModel.get(id) !== true;
   const { notes, offerMade } = buildNotes({
     lastHeard: replacedLast ? lastTurn.assistant : null,
     unresolved: conv.unresolved_count,
@@ -309,6 +343,8 @@ async function runTurn(p: TurnRequest): Promise<TurnResult> {
       verifyState: conv.caller_verify_state,
     },
   });
+
+  if (collectingReason) notes.push(COLLECTING_REASON_NOTE);
 
   // One budget for the whole turn, including any repair. Per-call timeouts let a repaired turn
   // run to roughly double the limit, which on a call is twice the silence.
@@ -348,6 +384,30 @@ async function runTurn(p: TurnRequest): Promise<TurnResult> {
     try {
       const repairNote = mentionsReference(p.text) ? LOOKUP_FIRST_NOTE : WORK_FIRST_NOTE;
       raw = await session.ask(callerMessage(p.text, [...notes, repairNote]), remaining());
+    } catch (err) {
+      sessions.delete(id);
+      return failTurn(id, turn.id, err, started);
+    }
+    parsed = parseTypedReply(raw.text);
+    extracted = extractFacts(raw.toolResults);
+    derived = deriveAnswerType(parsed.type, extracted.facts);
+  }
+  if (collectingReason && derived.downgraded && !repaired && remaining() > config.repairMinRemainingMs) {
+    repaired = true;
+    try {
+      raw = await session.ask(callerMessage(p.text, [...notes, COLLECTING_REASON_REPAIR_NOTE]), remaining());
+    } catch (err) {
+      sessions.delete(id);
+      return failTurn(id, turn.id, err, started);
+    }
+    parsed = parseTypedReply(raw.text);
+    extracted = extractFacts(raw.toolResults);
+    derived = deriveAnswerType(parsed.type, extracted.facts);
+  }
+  if (derived.type === "unintelligible" && isPlainAnswer(p.text) && !repaired && remaining() > config.repairMinRemainingMs) {
+    repaired = true;
+    try {
+      raw = await session.ask(callerMessage(p.text, [...notes, PLAIN_ANSWER_REPAIR_NOTE]), remaining());
     } catch (err) {
       sessions.delete(id);
       return failTurn(id, turn.id, err, started);
@@ -435,7 +495,8 @@ async function runTurn(p: TurnRequest): Promise<TurnResult> {
   if (repaired) note = `${note ? `${note}. ` : ""}first reply asked without doing any work; sent back once`;
   // What the model actually said is kept for review whenever the server overrides it.
   const said = `model said: "${parsed.text.replace(/\s+/g, " ").slice(0, 200)}"`;
-  if (derived.downgraded && !codeOwned) {
+  const callbackTalk = recordsBefore.escalationExists && CALLBACK_TALK.test(parsed.text);
+  if (derived.downgraded && !codeOwned && !callbackTalk) {
     // Claiming an answer with nothing retrieved is not allowed through: the reply is replaced, not relabelled.
     spoken = SAFE_FALLBACK;
     note = `${derived.note}. ${said}`;
@@ -511,6 +572,7 @@ async function runTurn(p: TurnRequest): Promise<TurnResult> {
     !guard.ok ? addEvent(getDb(), id, "speech_guard", "reply replaced by a safe line", { reasons: guard.reasons }) : undefined,
     collecting ? store.setStatus(id, "collecting_details") : wasCollecting && answerType !== "escalate" ? store.setStatus(id, "active") : undefined,
   ]);
+  markSpoken(id, spoken === parsed.text);
   for (const w of writes) {
     if (w.status === "rejected") console.error("turn bookkeeping write failed:", w.reason);
   }

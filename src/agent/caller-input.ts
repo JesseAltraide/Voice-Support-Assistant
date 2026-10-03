@@ -128,3 +128,16 @@ export function isRepeatQuestion(text: string, priorTexts: string[]): boolean {
     return shared / (current.size + other.size - shared) >= SIMILARITY;
   });
 }
+
+const PLAIN_ANSWER_START = /^(yes|yeah|yep|yup|sure|ok|okay|no|nope|nah)\b/;
+const MAX_PLAIN_ANSWER_WORDS = 8;
+
+/**
+ * Whether the caller just said yes or no, perhaps with a few words after it. That is always an
+ * answer to something, never noise, so a model verdict of "unintelligible" on it is a fault in the
+ * model's picture of the conversation, not in the audio.
+ */
+export function isPlainAnswer(text: string): boolean {
+  const t = normaliseClosing(text);
+  return t.length > 0 && t.split(" ").length <= MAX_PLAIN_ANSWER_WORDS && PLAIN_ANSWER_START.test(t);
+}

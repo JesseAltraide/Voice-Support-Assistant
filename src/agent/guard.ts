@@ -216,6 +216,17 @@ const tokensOf = (norm: string): string[] =>
     .map((t) => (t.includes("@") ? t.replace(/[,;!?]+$/g, "") : t.replace(/^[.,;!?'-]+|[.,;!?'-]+$/g, "")))
     .filter(Boolean);
 
+const EMAIL_SHAPED = /@[\p{L}\p{N}.-]+\.[\p{L}]{2,}/u;
+
+/**
+ * "at" is rewritten to "@" so a spoken address can match a typed one, which also glues "October at
+ * 3" into the single token "october@3". Grounded text is split back apart wherever a token is not
+ * shaped like an address, so a second time in a reply ("or 4:30") finds its own neighbours in what
+ * the tool said, instead of being blocked as an invented figure.
+ */
+const ungluedTokens = (norm: string): string[] =>
+  tokensOf(norm).flatMap((t) => (t.includes("@") && !EMAIL_SHAPED.test(t) ? [t, ...t.split("@").filter(Boolean)] : [t]));
+
 const wordRe = (word: string) => new RegExp(`(^|[^\\p{L}\\p{N}])${word.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}([^\\p{L}\\p{N}]|$)`, "iu");
 
 // ---- grounding ----------------------------------------------------------------------------
@@ -232,7 +243,7 @@ function collect(texts: string[]): Allowed {
   const words = new Set<string>();
   const bigrams = new Set<string>();
   for (const text of texts) {
-    const t = tokensOf(normalise(text));
+    const t = ungluedTokens(normalise(text));
     t.forEach((w, i) => {
       words.add(w);
       if (i > 0) bigrams.add(`${t[i - 1]} ${w}`);

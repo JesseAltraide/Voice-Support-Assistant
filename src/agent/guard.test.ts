@@ -244,3 +244,24 @@ describe("a verified caller may hear only the account facts the lookup returned"
     expect(check("Your account is restricted because compliance flagged it for review.", f).reasons).toContain("record_field");
   });
 });
+
+describe("two real times in one sentence are both grounded", () => {
+  const grounded = [
+    "Monday 5 October at 15:00", "Monday 5 October at 3 in the afternoon",
+    "Monday 5 October at 16:30", "Monday 5 October at 4:30 in the afternoon",
+  ];
+  const ok = (reply: string) => reasonsOf({ reply, groundedTexts: grounded, callerTexts: ["Can we do Monday 4:00 PM?"] });
+
+  it("a list of two offered times passes", () => {
+    expect(ok("We have Monday 5 October at 3 in the afternoon or 4:30 in the afternoon. Which suits you?")).not.toContain("ungrounded_number");
+  });
+
+  it("a time that was not offered is still blocked", () => {
+    expect(ok("We have Monday 5 October at 3 in the afternoon or 6:15 in the afternoon.")).toContain("ungrounded_number");
+    expect(ok("We have Monday 5 October at 5 in the afternoon or 6:15 in the afternoon.")).toContain("ungrounded_number");
+  });
+
+  it("an email address still tokenises as one address", () => {
+    expect(reasonsOf({ reply: "I have you down as amara@lagosledger.example", callerTexts: ["amara at lagosledger dot example"], groundedTexts: [] })).not.toContain("email");
+  });
+});

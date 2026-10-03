@@ -1,5 +1,5 @@
 import { describe, expect, it, test } from "vitest";
-import { classifyInput, isClosing, isRepeatQuestion } from "./caller-input.js";
+import { classifyInput, isClosing, isPlainAnswer, isRepeatQuestion } from "./caller-input.js";
 
 describe("classifyInput", () => {
   it.each([
@@ -103,4 +103,16 @@ describe("a plain thank-you after a wrap-up question is a sign-off", () => {
   test("the same gratitude mid-conversation, with no wrap-up question before it, does not close", () => {
     expect(isClosing("Thank you very much", "Your fees depend on the corridor and currency.")).toBe(false);
   });
+});
+
+describe("isPlainAnswer", () => {
+  test.each(["Yes.", "Yes, I'd like that.", "No, thank you.", "Yeah okay", "Sure, go ahead", "No"])("%j is a plain answer", (t) => {
+    expect(isPlainAnswer(t)).toBe(true);
+  });
+  test.each(["", "My cat is stuck", "I want to set up my account", "Yes I would like to know about the fees for international payments please", "Tell me about it"])(
+    "%j is not",
+    (t) => {
+      expect(isPlainAnswer(t)).toBe(false);
+    },
+  );
 });
