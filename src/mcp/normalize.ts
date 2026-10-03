@@ -17,8 +17,11 @@ export function normalizeId(raw: string | null | undefined, kind: IdKind): strin
     .toLowerCase()
     .replace(/\b(zero|oh|one|two|three|four|five|six|seven|eight|nine)\b/g, (w) => DIGIT_WORDS[w] ?? w);
   const compact = spoken.replace(/[^a-z0-9]/g, "");
-  const m = compact.match(/^(txn|pay|cus)(\d{4,8})$/);
-  if (!m || m[1]?.toUpperCase() !== kind) return null;
+  // The three letters are accepted in any order: "TNX-9001" is how "T X N" is heard and said as
+  // often as not. The digits must still match exactly and the lookup is scoped to the caller.
+  const m = compact.match(/^([a-z]{3})(\d{4,8})$/);
+  const sorted = (w: string): string => [...w].sort().join("");
+  if (!m || sorted(m[1]!) !== sorted(kind.toLowerCase())) return null;
   return `${kind}-${m[2]}`;
 }
 

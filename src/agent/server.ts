@@ -18,6 +18,7 @@ import {
 import { getDb, requireEnv } from "../shared/db.js";
 import { agentAuthToken, mcpAuthToken } from "./config.js";
 import { dispatchHandoffEmails } from "./handoff-email.js";
+import { resendFailedConfirmations } from "../mcp/callbacks.js";
 import { endConversation, handleTurn, NotFoundError } from "./respond.js";
 import { createConversation } from "./store.js";
 import { sweepExpiredSessions, sweepStaleConversations } from "./sweep.js";
@@ -620,6 +621,9 @@ const emailFailed = (err: unknown) =>
 const emailTimer = setInterval(() => void dispatchHandoffEmails().catch(emailFailed), 60_000);
 emailTimer.unref();
 void dispatchHandoffEmails().catch(emailFailed);
+const resendTimer = setInterval(() => void resendFailedConfirmations(getDb()).catch(emailFailed), 60_000);
+resendTimer.unref();
+void resendFailedConfirmations(getDb()).catch(emailFailed);
 
 // A malformed body must never return Express's default page, which can carry a stack trace.
 app.use((_err: unknown, _req: Request, res: Response, _next: NextFunction) => {

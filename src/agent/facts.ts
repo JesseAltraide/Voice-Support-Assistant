@@ -65,6 +65,7 @@ export function extractFacts(results: ToolResult[]): ExtractedFacts {
       // real. Both the digit and spoken forms are pushed, since the model may use either.
       if (isString(d.reads_as)) groundedTexts.push(d.reads_as);
       if (isString(d.reads_as_spoken)) groundedTexts.push(d.reads_as_spoken);
+      if (isString(d.window)) groundedTexts.push(d.window);
       if (Array.isArray(d.open_slots)) {
         for (const o of d.open_slots) {
           const slot = o as { reads_as?: unknown; reads_as_spoken?: unknown } | null;

@@ -27,7 +27,7 @@ const BATCH = 10;
  * the web can close the tab; the support team must still receive the handoff the caller was
  * told about. A misspelt name is a smaller failure than a lost escalation.
  */
-export const CONFIRM_GRACE_MS = 10 * 60_000;
+export const CONFIRM_GRACE_MS = 0;
 
 /** First wait after a failure; each subsequent attempt doubles it. */
 const BACKOFF_BASE_MS = 2 * 60_000;

@@ -437,3 +437,19 @@ describe("lookup_customer tolerates how speech-to-text splits a company name", (
     expect(body.customer_id).toBe("CUS-1001");
   });
 });
+
+describe("callback tools always carry the booking window", () => {
+  it("open_slots comes with the days and hours", async () => {
+    const { body } = await call("check_callback_availability", {});
+    expect(typeof body.window).toBe("string");
+    expect(body.window as string).toMatch(/Monday|weekday/i);
+  });
+
+  it("a taken or refused time says why, with the window, before the alternatives", async () => {
+    const saturday = "2026-10-10T10:00:00Z";
+    const { body } = await call("check_callback_availability", { requested_time: saturday });
+    expect(body.available).toBe(false);
+    expect(typeof body.window).toBe("string");
+    expect(Array.isArray(body.alternatives)).toBe(true);
+  });
+});

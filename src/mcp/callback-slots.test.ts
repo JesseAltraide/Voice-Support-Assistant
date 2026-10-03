@@ -186,3 +186,9 @@ describe("isRealTimeZone", () => {
     expect(isRealTimeZone("not a zone")).toBe(false);
   });
 });
+
+describe("refusal wording for a taken slot", () => {
+  test("says plainly that the time has already been booked", () => {
+    expect(REFUSAL_REASON.full).toBe("that time has already been booked");
+  });
+});

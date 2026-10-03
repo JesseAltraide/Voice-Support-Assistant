@@ -52,3 +52,21 @@ describe("speakDate", () => {
     expect(speakDate("", today)).toBeNull();
   });
 });
+
+describe("normalizeId accepts the three prefix letters in any order", () => {
+  it.each([
+    ["TNX-9001", "TXN", "TXN-9001"],
+    ["t n x 9 0 0 1", "TXN", "TXN-9001"],
+    ["XTN9001", "TXN", "TXN-9001"],
+    ["yap 7001", "PAY", "PAY-7001"],
+    ["ypa-7001", "PAY", "PAY-7001"],
+  ])("%s as %s", (raw, kind, expected) => {
+    expect(normalizeId(raw, kind as "TXN" | "PAY" | "CUS")).toBe(expected);
+  });
+
+  it("still rejects a different prefix, the wrong kind, or too few digits", () => {
+    expect(normalizeId("TXM-9001", "TXN")).toBeNull();
+    expect(normalizeId("PAY-7001", "TXN")).toBeNull();
+    expect(normalizeId("TNX-90", "TXN")).toBeNull();
+  });
+});

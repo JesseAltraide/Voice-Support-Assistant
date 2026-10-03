@@ -2,7 +2,7 @@ import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import type { SupabaseClient } from "@supabase/supabase-js";
 import { z } from "zod";
 import {
-  bookableSlots, describeSlot, describeSlotSpoken, REFUSAL_REASON, slotRefusal,
+  bookableSlots, describeSlot, describeSlotSpoken, describeWindow, REFUSAL_REASON, slotRefusal,
   SLOT_CAPACITY, SLOT_MINUTES, SUPPORT_TIMEZONE,
 } from "./callback-slots.js";
 import { sendCallerEmail } from "../agent/handoff-email.js";
@@ -62,6 +62,37 @@ async function confirmByEmail(db: SupabaseClient, bookingId: string, conv: Conve
         confirmation_email_error: (err instanceof Error ? err.message : String(err)).slice(0, 300),
       })
       .eq("id", bookingId);
+  }
+}
+
+const resendAttempts = new Map<string, number>();
+const MAX_RESEND_ATTEMPTS = 5;
+const RESEND_WINDOW_MS = 24 * 60 * 60_000;
+const RESEND_BATCH = 10;
+
+/**
+ * Send again any booking confirmation that failed, for bookings still in the future. Run on a
+ * timer: the first attempt happens during a live call and a single network blip would otherwise
+ * mean the caller is never told in writing what was agreed. Bounded per booking so a permanently
+ * bad address is not tried for ever.
+ */
+export async function resendFailedConfirmations(db: SupabaseClient): Promise<void> {
+  const since = new Date(Date.now() - RESEND_WINDOW_MS).toISOString();
+  const { data, error } = await db
+    .from("callback_bookings")
+    .select("id,conversation_id,slot_start")
+    .eq("status", "booked")
+    .eq("confirmation_email_status", "failed")
+    .gte("created_at", since)
+    .limit(RESEND_BATCH);
+  if (error) throw new Error(error.message);
+  for (const b of data ?? []) {
+    const id = b.id as string;
+    const tries = resendAttempts.get(id) ?? 0;
+    const slot = new Date(b.slot_start as string);
+    if (tries >= MAX_RESEND_ATTEMPTS || slot.getTime() <= Date.now()) continue;
+    resendAttempts.set(id, tries + 1);
+    await confirmByEmail(db, id, await conversationContext(db, b.conversation_id as string), slot);
   }
 }
 
@@ -160,7 +191,7 @@ export function registerCallbackTools(server: McpServer, db: SupabaseClient, ctx
         if (!args.requested_time) {
           const open_slots = await openSlots(db, new Date(), conv.caller_timezone);
           return {
-            result: { open_slots, next_step: "offer_these_open_times_then_ask_which_suits_or_for_another_time_in_the_window" },
+            result: { window: describeWindow(conv.caller_timezone, new Date()), open_slots, next_step: "offer_these_open_times_then_ask_which_suits_or_for_another_time_in_the_window" },
             summary: `open_slots=${open_slots.length}`,
           };
         }
@@ -190,8 +221,9 @@ export function registerCallbackTools(server: McpServer, db: SupabaseClient, ctx
           result: {
             available: false,
             reason: REFUSAL_REASON[refusal],
+            window: describeWindow(conv.caller_timezone, now),
             alternatives: await alternatives(db, slot, now, conv.caller_timezone),
-            next_step: "say_the_reason_then_offer_the_alternatives",
+            next_step: "say_the_reason_then_say_the_window_then_offer_the_alternatives",
           },
           summary: `available=false reason=${refusal}`,
         };
@@ -265,9 +297,12 @@ export function registerCallbackTools(server: McpServer, db: SupabaseClient, ctx
           };
         }
 
-        // Awaited, so the outcome is recorded before the agent speaks — but it can only mark the
-        // row, never fail the booking.
-        await confirmByEmail(db, row.booking_id as string, conv, slot);
+        // Not awaited: a mail server that is slow or unreachable must never hold up, or fail, the
+        // call the caller is on. The outcome is recorded on the row, and a failed one is retried by
+        // resendFailedConfirmations.
+        void confirmByEmail(db, row.booking_id as string, conv, slot).catch((err) =>
+          console.error("callback confirmation email:", err instanceof Error ? err.message : err),
+        );
 
         return {
           result: {

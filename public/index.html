@@ -124,31 +124,10 @@
     <p class="reason" id="reason" role="alert" hidden></p>
     <p class="hint" id="hint">Your microphone is used only while the call is running.</p>
 
-    <!-- Shown after the call, only when an escalation was raised. Speech-to-text mishears names
-         and addresses constantly, and an escalation sent to a misheard address reaches nobody. -->
+    <!-- Shown after the call, only when a callback was booked: the agreed time, in writing. -->
     <section class="review" id="review" hidden aria-labelledby="review-heading">
-      <h2 id="review-heading">Before this goes to a specialist</h2>
-
-      <!-- A time agreed out loud is the thing a caller most wants to see written down, and it
-           stands whether or not the call also raised an escalation. -->
+      <h2 id="review-heading">Your callback</h2>
       <p class="callback" id="review-callback" hidden></p>
-
-      <div id="review-escalation">
-      <p class="review-lede">Please check your name and email. Everything else was agreed on the call.</p>
-
-      <label class="field" for="review-name">Your name</label>
-      <input class="input" id="review-name" type="text" autocomplete="name" maxlength="100" />
-
-      <label class="field" for="review-email">Your email</label>
-      <input class="input" id="review-email" type="email" autocomplete="email" maxlength="254" inputmode="email" />
-
-      <p class="field">What we're sending</p>
-      <ul class="issues" id="review-issues"></ul>
-      <p class="issue-ref" id="review-reference" hidden></p>
-
-      <button id="review-submit">Confirm and send</button>
-      <p class="reason" id="review-status" role="alert" hidden></p>
-      </div>
     </section>
 
     <section class="transcript" id="transcript" hidden aria-live="polite"></section>
@@ -223,7 +202,6 @@ function perform(effect) {
     transcript.hidden = true;
     el("review").hidden = true;
     reviewRequested = false;
-    reviewStatus("");
   }
 }
 
@@ -404,14 +382,7 @@ for (const id of ["precall-name", "precall-email"]) {
   el(id).addEventListener("input", render);
 }
 
-function reviewStatus(text, isError) {
-  const node = el("review-status");
-  node.hidden = !text;
-  node.className = isError ? "reason error" : "reason";
-  node.textContent = text ?? "";
-}
 
-async function loadReview() {
   let draft;
   try {
     const res = await fetch(`/escalation/draft?call_id=${encodeURIComponent(callId)}`);
@@ -426,35 +397,7 @@ async function loadReview() {
   callback.hidden = !draft.callback;
   callback.textContent = draft.callback ? `Callback booked for ${draft.callback.reads_as}.` : "";
 
-  // A call may book a callback without raising anything for a specialist. There is then nothing
-  // to confirm, so the contact form stays out of the way rather than asking for details no one
-  // is waiting on.
-  el("review-escalation").hidden = !draft.has_escalation;
-  el("review-heading").textContent = draft.has_escalation
-    ? "Before this goes to a specialist"
-    : "Your callback";
-  if (!draft.has_escalation) {
-    el("review").hidden = false;
-    return;
-  }
-
-  el("review-name").value = draft.name ?? "";
-  el("review-email").value = draft.email ?? "";
-  const list = el("review-issues");
-  list.replaceChildren();
-  for (const issue of draft.reasons ?? []) {
-    const li = document.createElement("li");
-    li.textContent = issue;
-    list.append(li);
-  }
-  const ref = el("review-reference");
-  ref.hidden = !draft.reference;
-  ref.textContent = draft.reference ? `Reference: ${draft.reference}` : "";
-
-  if (draft.confirmed) {
-    reviewStatus("You have already confirmed these details.", false);
-    el("review-submit").disabled = true;
-  }
+  if (!draft.callback) return;
   el("review").hidden = false;
 }
 
@@ -465,45 +408,6 @@ function maybeShowReview() {
   reviewRequested = true;
   void loadReview();
 }
-
-el("review-submit").addEventListener("click", async () => {
-  const nameInput = el("review-name");
-  const emailInput = el("review-email");
-  const name = nameInput.value.trim();
-  const email = emailInput.value.trim();
-
-  // Checked here so the caller is told immediately, and again on the server, which is what
-  // actually decides: this page is not the only thing that can post to that route.
-  nameInput.classList.toggle("invalid", name.length < 2);
-  emailInput.classList.toggle("invalid", !EMAIL_RE.test(email));
-  if (name.length < 2) return reviewStatus("Please enter your name.", true);
-  if (!EMAIL_RE.test(email)) return reviewStatus("That does not look like an email address.", true);
-
-  el("review-submit").disabled = true;
-  reviewStatus("Sending…", false);
-  try {
-    const res = await fetch("/escalation/confirm", {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ call_id: callId, name, email }),
-    });
-    if (res.ok) {
-      reviewStatus("Thank you. This is on its way to a specialist.", false);
-      nameInput.disabled = true;
-      emailInput.disabled = true;
-      return;
-    }
-    if (res.status === 409) {
-      reviewStatus("This has already been sent to a specialist, so these details can no longer be changed.", false);
-      return;
-    }
-    el("review-submit").disabled = false;
-    reviewStatus(res.status === 400 ? "Please check your name and email." : "That could not be saved. Please try again.", true);
-  } catch {
-    el("review-submit").disabled = false;
-    reviewStatus("That could not be saved. Please check your connection and try again.", true);
-  }
-});
 
 function attach(instance) {
   instance.on("call-start", () => dispatch({ type: "call-started" }));

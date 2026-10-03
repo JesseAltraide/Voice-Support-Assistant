@@ -81,36 +81,27 @@ describe("retry pacing", () => {
     expect(isDue(at("pending", 0, null), Date.now())).toBe(true);
   });
 
-  // Nothing reaches support until the caller has had a chance to fix a misheard name or address.
-  describe("waiting for the caller to confirm their details", () => {
-    const made = (minutesAgo: number, confirmed: boolean) => ({
+  // The caller no longer confirms their details on a form: the agent reads them back aloud, so a
+  // handoff is due as soon as it exists.
+  describe("no waiting for the caller to confirm their details", () => {
+    const made = (minutesAgo: number) => ({
       handoff_email_status: "pending",
       handoff_email_attempts: 0,
       handoff_email_claimed_at: null,
       created_at: new Date(Date.now() - minutesAgo * MINUTE).toISOString(),
-      contact_confirmed_at: confirmed ? new Date().toISOString() : null,
+      contact_confirmed_at: null,
     });
 
-    test("an unconfirmed escalation is held", () => {
-      expect(isDue(made(1, false), Date.now())).toBe(false);
-    });
-
-    test("confirming releases it at once, without waiting out the grace", () => {
-      expect(isDue(made(1, true), Date.now())).toBe(true);
-    });
-
-    test("an unconfirmed escalation is released once the grace has passed", () => {
-      // A phone caller never sees the form and a web caller can close the tab. Losing the
-      // handoff would be worse than sending it with the name we heard.
-      expect(isDue(made(11, false), Date.now())).toBe(true);
+    test("an unconfirmed escalation is due at once", () => {
+      expect(isDue(made(0), Date.now())).toBe(true);
     });
 
     test("a row with no creation time is sent rather than stranded", () => {
-      expect(isDue({ ...made(1, false), created_at: null }, Date.now())).toBe(true);
+      expect(isDue({ ...made(1), created_at: null }, Date.now())).toBe(true);
     });
 
-    test("the grace is minutes, not hours", () => {
-      expect(CONFIRM_GRACE_MS).toBeLessThanOrEqual(15 * MINUTE);
+    test("there is no grace period", () => {
+      expect(CONFIRM_GRACE_MS).toBe(0);
     });
   });
 

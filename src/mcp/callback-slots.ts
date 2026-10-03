@@ -203,7 +203,7 @@ export const REFUSAL_REASON: Record<SlotRefusal, string> = {
   too_soon: "the earliest callback is about an hour from now",
   too_far_ahead: "callbacks can only be arranged up to two weeks ahead",
   not_on_the_half_hour: "callbacks start on the hour or the half hour",
-  full: "that time is already full",
+  full: "that time has already been booked",
 };
 
 /** Whether the runtime knows this IANA zone. A well-shaped but unknown zone throws in Intl, so it is checked, not pattern-matched. */

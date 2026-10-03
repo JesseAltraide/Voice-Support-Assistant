@@ -151,3 +151,13 @@ describe("open callback slots are grounded in both spoken forms", () => {
     expect(groundedTexts).toContain("Monday 5 October at 9 in the morning");
   });
 });
+
+describe("the booking window is grounded", () => {
+  it("grounds the window sentence a callback tool returns", () => {
+    const { groundedTexts } = extractFacts([{
+      name: "mcp__relaypay__check_callback_availability", isError: false,
+      data: { window: "Monday to Friday, between 8 in the morning and 5 in the afternoon", open_slots: [] },
+    }]);
+    expect(groundedTexts).toContain("Monday to Friday, between 8 in the morning and 5 in the afternoon");
+  });
+});
