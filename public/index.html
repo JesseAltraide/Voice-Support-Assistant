@@ -383,6 +383,7 @@ for (const id of ["precall-name", "precall-email"]) {
 }
 
 
+async function loadReview() {
   let draft;
   try {
     const res = await fetch(`/escalation/draft?call_id=${encodeURIComponent(callId)}`);
