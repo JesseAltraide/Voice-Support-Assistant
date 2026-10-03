@@ -291,7 +291,10 @@ async function runTurn(p: TurnRequest): Promise<TurnResult> {
   const escalated = recordsBefore.escalationExists;
   const callerAll = [...prior, p.text];
 
+  const lastTurn = recent[0];
+  const replacedLast = lastTurn && (lastTurn.guardTripped || lastTurn.answerType === "decline" || lastTurn.answerType === "unintelligible");
   const { notes, offerMade } = buildNotes({
+    lastHeard: replacedLast ? lastTurn.assistant : null,
     unresolved: conv.unresolved_count,
     offersMade: conv.handoff_offers_made,
     failedLookups: conv.failed_lookup_count,

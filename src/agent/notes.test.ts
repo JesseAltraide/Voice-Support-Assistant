@@ -166,3 +166,19 @@ describe("the guest line is blunt, and never pushes an escalation", () => {
     expect(n).toMatch(/specialist has nothing more to look up/i);
   });
 });
+
+describe("what the caller actually heard when the server replaced the reply", () => {
+  const OFFER_LINE = "I'm sorry, I can't answer that here. I can log a request for a specialist to follow up if you'd like.";
+
+  it("quotes the spoken line and says a yes answers it", () => {
+    const joined = notesFor({ lastHeard: OFFER_LINE }).notes.join("\n");
+    expect(joined).toContain(OFFER_LINE);
+    expect(joined).toContain("did NOT hear your last draft");
+    expect(joined).toMatch(/say yes, go straight to collecting their details/);
+  });
+
+  it("adds nothing when the last reply was the model's own", () => {
+    expect(notesFor({ lastHeard: null }).notes.join("\n")).not.toContain("did NOT hear");
+    expect(notesFor({}).notes.join("\n")).not.toContain("did NOT hear");
+  });
+});

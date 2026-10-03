@@ -16,6 +16,12 @@ export interface NoteInput {
     timezone?: string | null;
     verifyState?: "verified" | "unconfirmed" | "guest" | null;
   };
+  /**
+   * What the caller actually heard last, when the server replaced the model's reply. The model
+   * never saw that line, so without it a plain "yes" to an offer the server made has nothing to
+   * answer and reads as unintelligible.
+   */
+  lastHeard?: string | null;
   /** Injectable so the clock note can be asserted. Defaults to the real one. */
   now?: Date;
 }
@@ -37,6 +43,12 @@ const OFFER =
 export function buildNotes(i: NoteInput): NoteResult {
   const notes: string[] = [];
   let offerMade = false;
+
+  if (i.lastHeard) {
+    notes.push(
+      `The caller did NOT hear your last draft: the server replaced it, and what they actually heard, word for word, was: "${i.lastHeard}". Treat their next message as a reply to THAT. If it offered to log a request for a specialist and they say yes, go straight to collecting their details as in WHEN A HUMAN IS NEEDED. Never tell the caller you did not catch a plain yes or no that answers it.`,
+    );
+  }
 
   // The caller typed these before the call, so they are spelled the way they meant them. Asking
   // again wastes the opening of an escalation on something already correct, and invites a
