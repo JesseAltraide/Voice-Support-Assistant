@@ -30,3 +30,33 @@ describe("the voice page", () => {
     }
   });
 });
+
+describe("call errors are shown in plain English", () => {
+  const block = html.slice(html.indexOf("// <friendly-errors>"), html.indexOf("// </friendly-errors>"));
+  const friendly = new Function(`${block}\nreturn friendlyCallError;`)() as (raw: unknown) => string;
+
+  test("an empty wallet reads as the service being out of credit", () => {
+    expect(friendly("Your Wallet Balance is -0.08. Please Purchase More Credits or Upgrade Your Plan Before Proceeding.")).toMatch(/out of credit/);
+  });
+
+  test("the SDK's own generic label is replaced, not shown", () => {
+    for (const raw of ["start-method-error", "Start method error", "", undefined, "unknown"]) {
+      expect(friendly(raw)).toBe("We could not start the call. Please try again in a moment.");
+    }
+  });
+
+  test("microphone, key and network failures each get their own sentence", () => {
+    expect(friendly("NotAllowedError: Permission denied")).toMatch(/microphone/);
+    expect(friendly("401 Unauthorized")).toMatch(/did not accept this connection/);
+    expect(friendly("Failed to fetch")).toMatch(/connection dropped/);
+  });
+
+  test("a generic error in the middle of a call does not claim the call never started", () => {
+    const f = friendly as (raw: unknown, fallback?: string) => string;
+    expect(f("unknown", "The call could not continue.")).toBe("The call could not continue.");
+  });
+
+  test("an unrecognised message is shown as it came", () => {
+    expect(friendly("Something specific happened")).toBe("Something specific happened");
+  });
+});

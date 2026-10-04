@@ -308,6 +308,48 @@ function errorMessage(err) {
   return found ? found.trim() : "The call could not continue.";
 }
 
+// <friendly-errors>
+const GENERIC_START_ERROR = "We could not start the call. Please try again in a moment.";
+
+/** Turns whatever the voice service said into a sentence a caller can act on. */
+function friendlyCallError(raw, fallback = GENERIC_START_ERROR) {
+  const text = String(raw ?? "").toLowerCase();
+  if (/wallet|credit|balance|upgrade your plan|payment required|402/.test(text)) {
+    return "Calls are unavailable right now because the voice service has run out of credit. Please try again later.";
+  }
+  if (/microphone|permission|notallowederror|denied/.test(text)) {
+    return "The page could not use your microphone. Allow microphone access in the browser and try again.";
+  }
+  if (/unauthori|forbidden|invalid.*key|api key|401|403/.test(text)) {
+    return "The voice service did not accept this connection. Please try again later.";
+  }
+  if (/assistant|not found|404/.test(text)) {
+    return "The voice assistant is not available right now. Please try again later.";
+  }
+  if (/network|failed to fetch|timeout|timed out|offline/.test(text)) {
+    return "The connection dropped. Check your internet and try again.";
+  }
+  if (!text || /start[- ]?method[- ]?error|unknown/.test(text)) return fallback;
+  return String(raw).trim();
+}
+// </friendly-errors>
+
+/** The voice service's real reason is inside a Response the SDK hands over, so it is read here. */
+async function describeError(err) {
+  const inner = err && err.error;
+  if (inner && typeof inner.json === "function") {
+    try {
+      const body = await inner.json();
+      if (body && typeof body.message === "string") return friendlyCallError(body.message);
+    } catch {
+      // The body was not readable; fall through to what the SDK itself said.
+    }
+  }
+  // Only a failure to start says so; an error in the middle of a call must not claim it never began.
+  const starting = err && /start[- ]?method/i.test(String(err.type ?? ""));
+  return friendlyCallError(errorMessage(err), starting ? GENERIC_START_ERROR : "The call could not continue.");
+}
+
 /**
  * The end-of-call check on the caller's own details.
  *
@@ -415,7 +457,7 @@ function attach(instance) {
   instance.on("speech-start", () => dispatch({ type: "speech-started" }));
   instance.on("speech-end", () => dispatch({ type: "speech-ended" }));
   instance.on("call-end", () => dispatch({ type: "call-ended" }));
-  instance.on("error", (err) => dispatch({ type: "error", message: errorMessage(err) }));
+  instance.on("error", async (err) => dispatch({ type: "error", message: await describeError(err) }));
   instance.on("message", (msg) => {
     const isFinal = msg && msg.type === "transcript" && msg.transcriptType === "final";
     if (!isFinal || typeof msg.transcript !== "string" || !msg.transcript.trim()) return;
@@ -459,7 +501,7 @@ startBtn.addEventListener("click", async () => {
     callId = call?.id ?? callId;
     void sendPrecallDetails();
   } catch (err) {
-    dispatch({ type: "start-failed", message: err && err.message ? err.message : "Something went wrong starting the call." });
+    dispatch({ type: "start-failed", message: friendlyCallError(err && err.message) });
   }
 });
 
