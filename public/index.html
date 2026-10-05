@@ -303,7 +303,8 @@ async function microphoneRefusal() {
 function errorMessage(err) {
   if (!err) return "The call could not continue.";
   if (typeof err === "string") return err;
-  const candidates = [err.errorMsg, err.error?.message, err.error, err.message, err.type];
+  // A failure from the call transport arrives as { type: "daily-error", error: { errorMsg, error: { msg } } }, so the reason is nested two levels down and the label is the last resort.
+  const candidates = [err.errorMsg, err.error?.errorMsg, err.error?.error?.msg, err.error?.error?.message, err.error?.message, err.error, err.message, err.type];
   const found = candidates.find((c) => typeof c === "string" && c.trim());
   return found ? found.trim() : "The call could not continue.";
 }
@@ -328,6 +329,12 @@ function friendlyCallError(raw, fallback = GENERIC_START_ERROR) {
   }
   if (/network|failed to fetch|timeout|timed out|offline/.test(text)) {
     return "The connection dropped. Check your internet and try again.";
+  }
+  if (/eject|meeting has ended|meeting ended|ended due to/.test(text)) {
+    return "The call was ended by the voice service. Please start a new call.";
+  }
+  if (/daily-error|connection|ice |socket|peer|audio/.test(text)) {
+    return "The call connection failed. Check that your microphone is on and allowed, check your internet, then try again.";
   }
   if (!text || /start[- ]?method[- ]?error|unknown/.test(text)) return fallback;
   return String(raw).trim();

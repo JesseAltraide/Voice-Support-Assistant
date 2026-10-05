@@ -56,6 +56,23 @@ describe("call errors are shown in plain English", () => {
     expect(f("unknown", "The call could not continue.")).toBe("The call could not continue.");
   });
 
+  test("the transport's own label is never shown", () => {
+    expect(friendly("daily-error")).toMatch(/microphone is on and allowed/);
+  });
+
+  test("an ejection or ended meeting reads as the service ending the call", () => {
+    expect(friendly("Meeting ended due to ejection: Meeting has ended")).toMatch(/ended by the voice service/);
+    expect(friendly("ejected")).toMatch(/ended by the voice service/);
+  });
+
+  test("the real reason is read from inside a transport error", () => {
+    const pick = new Function(`${html.slice(html.indexOf("function errorMessage"), html.indexOf("// <friendly-errors>"))}
+return errorMessage;`)() as (e: unknown) => string;
+    expect(pick({ type: "daily-error", error: { errorMsg: "Meeting has ended", error: { msg: "ejected" } } })).toBe("Meeting has ended");
+    expect(pick({ type: "daily-error", error: { error: { msg: "Connection error" } } })).toBe("Connection error");
+    expect(pick({ type: "daily-error" })).toBe("daily-error");
+  });
+
   test("an unrecognised message is shown as it came", () => {
     expect(friendly("Something specific happened")).toBe("Something specific happened");
   });
